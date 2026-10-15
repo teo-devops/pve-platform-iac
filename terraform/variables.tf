@@ -1,7 +1,7 @@
 # variables.tf — solo lo que NO puede estar en el repo.
 #
 # Todo lo demas sale de ficheros versionados, no de variables: la plataforma de
-# homelab.yaml, los proyectos de projects.yaml, el catalogo de catalog/ y las
+# platform.yaml, los proyectos de projects.yaml, el catalogo de catalog/ y las
 # peticiones de requests/ (requests.tf). Asi nadie edita HCL para pedir una VM.
 
 # Token de API de Proxmox. Dos, segun el job (docs/credenciales.md):

@@ -5,7 +5,7 @@ repo** (organización, ruleset, environments, HCP, runners, ACL de Proxmox y CA)
 
 **Antes de empezar necesitas:** acceso root a un nodo de Proxmox VE 8.4 o posterior (probado con
 9.x), ser owner de la organización de GitHub (o poder crearla), una cuenta en HCP Terraform y un host
-pequeño en el homelab para los runners (LXC o VM con Docker: 2 vCPU y 4 GB bastan), una cuenta de
+pequeño en la infraestructura para los runners (LXC o VM con Docker: 2 vCPU y 4 GB bastan), una cuenta de
 Cloudflare para la VPN de los devs (§10) y un bucket en tu SeaweedFS para las copias (§11). En tu máquina:
 `gh` autenticado con permisos de admin (`gh auth refresh -s admin:org`), `terraform`, `python3` con
 PyYAML, `jq` y `curl`.
@@ -25,7 +25,7 @@ fuera de banda** a mano: un error en la red te deja sin acceso al nodo.
 
 1. **Instalación (PVE 9.x).** Decide aquí dos cosas que después cuesta cambiar:
    - **Disco:** con ZFS (`ashift=12`, `compression=lz4`), el datastore de las VMs se llama
-     `local-zfs`; con ext4/xfs, `local-lvm`. Es el valor de `datastore` en `homelab.yaml`. ZFS
+     `local-zfs`; con ext4/xfs, `local-lvm`. Es el valor de `datastore` en `platform.yaml`. ZFS
      `RAID0` con un solo disco **no tiene redundancia**: si muere el disco, se pierden sus VMs (ver
      el paso 9).
    - **Nombre (FQDN) e IP estática definitivos.** El certificado del nodo (`pve-ssl.pem`) incluye
@@ -58,7 +58,7 @@ fuera de banda** a mano: un error en la red te deja sin acceso al nodo.
    ```sh
    echo "options zfs zfs_arc_max=$((6*1024**3))" > /etc/modprobe.d/zfs.conf && update-initramfs -u
    ```
-4. **Red.** El instalador crea `vmbr0` sobre la NIC. Si `homelab.yaml` lleva `vlan_tag`, el bridge
+4. **Red.** El instalador crea `vmbr0` sobre la NIC. Si `platform.yaml` lleva `vlan_tag`, el bridge
    tiene que admitir VLAN. Edita `/etc/network/interfaces` y aplícalo con `ifreload -a`, guardando
    antes una copia:
 
@@ -68,7 +68,7 @@ fuera de banda** a mano: un error en la red te deja sin acceso al nodo.
        bridge-vlan-aware yes
        bridge-vids 2-4094
    ```
-   Si el NIC es uno solo, por él pasan la gestión, las VMs y corosync: es suficiente en un homelab,
+   Si el NIC es uno solo, por él pasan la gestión, las VMs y corosync: es suficiente en un cluster pequeño,
    pero no lo satures con copias de seguridad en horario de trabajo.
 5. **DNS.** Comprueba que el servidor que vas a poner en `network.dns` responde de verdad. Muchos
    routers dan la puerta de enlace, pero no sirven DNS:
@@ -136,11 +136,21 @@ pvesm status --content images,import        # datastore e image_datastore, activ
 zpool status                                # ONLINE (con ZFS)
 ```
 
-## 1. Organización de GitHub
+## 1. Organización de GitHub o cuenta personal
+
+Dos formas de alojar tu instancia ([D-01](diseno.md#decisiones)):
+
+| | **A. Organización** (recomendada para empresas) | **B. Cuenta personal, repo público** |
+|---|---|---|
+| Quién pide infraestructura | Miembros del equipo `colaboradores` (rol Read) con fork | Cualquiera con fork; el admin decide qué se planifica |
+| Runners propios | Grupos limitados a los workflows de `main` | Runners del repo, sin limitación por workflow ([A-11](seguridad.md#riesgos-aceptados)) |
+| Configuración de la instancia | Privada | Pública: nodos, IPs internas, usuarios ([A-12](seguridad.md#riesgos-aceptados)) |
+| Coste en GitHub | Plan Team (rulesets y environments en un repo privado) | Gratis (en un repo público son gratis) |
+
+### A. Organización
 
 1. Crea la organización (Settings de tu cuenta → Organizations → New organization) con el plan
-   **Team**: hacen falta rulesets y environments con restricciones de rama en un repo privado
-   ([D-01](diseno.md#decisiones)).
+   **Team**: hacen falta rulesets y environments con restricciones de rama en un repo privado.
 2. Base de permisos: los miembros no ven nada salvo lo que se les da; se pueden forkear repos
    privados (los devs trabajan con forks, [D-04](diseno.md#decisiones)):
 
@@ -154,37 +164,62 @@ zpool status                                # ONLINE (con ZFS)
    gh api orgs/<ORG>/teams -f name=infra-admins -f privacy=closed      # admins
    gh api orgs/<ORG>/teams -f name=colaboradores -f privacy=closed     # devs y freelancers
    ```
-4. Crea el repo privado `<ORG>/homelab-iac`, súbelo y da permisos:
+4. Crea el repo privado `<ORG>/pve-platform-iac` desde la plantilla, súbelo y da permisos:
 
    ```sh
-   gh repo create <ORG>/homelab-iac --private --source . --push
-   # Si el repo ya existe en una cuenta personal (p. ej. teo-devops/homelab-iac), en vez de crearlo,
-   # transfiérelo (conserva historial, PR e issues; GitHub redirige la URL vieja):
-   #   gh api -X POST repos/teo-devops/homelab-iac/transfer -f new_owner=<ORG>
-   #   git remote set-url origin https://github.com/<ORG>/homelab-iac.git
-   gh api -X PUT orgs/<ORG>/teams/infra-admins/repos/<ORG>/homelab-iac -f permission=admin
-   gh api -X PUT orgs/<ORG>/teams/colaboradores/repos/<ORG>/homelab-iac -f permission=pull   # Read
+   gh repo create <ORG>/pve-platform-iac --private --template teo-devops/pve-platform-iac --clone
+   cd pve-platform-iac && make init OWNER=@<ORG>/infra-admins     # tu configuración, desde examples/
+   # Si el repo ya existe en una cuenta personal, en vez de crearlo, transfiérelo (conserva
+   # historial, PR e issues; GitHub redirige la URL vieja):
+   #   gh api -X POST repos/<usuario>/pve-platform-iac/transfer -f new_owner=<ORG>
+   gh api -X PUT orgs/<ORG>/teams/infra-admins/repos/<ORG>/pve-platform-iac -f permission=admin
+   gh api -X PUT orgs/<ORG>/teams/colaboradores/repos/<ORG>/pve-platform-iac -f permission=pull   # Read
    ```
 5. Workflows de forks en repos privados: se ejecutan, sin secretos ni token de escritura, y con
    aprobación:
 
    ```sh
-   gh api -X PUT repos/<ORG>/homelab-iac/actions/permissions/fork-pr-workflows-private-repos \
+   gh api -X PUT repos/<ORG>/pve-platform-iac/actions/permissions/fork-pr-workflows-private-repos \
      -F run_workflows_from_fork_pull_requests=true -F send_write_tokens_to_workflows=false \
      -F send_secrets_and_variables=false -F require_approval_for_fork_pr_workflows=true
    ```
-6. En `.github/CODEOWNERS`, cambia `<ORG>` por la organización (por PR).
 
-## 2. homelab.yaml y projects.yaml
+### B. Cuenta personal con repo público
+
+1. Crea el repo desde la plantilla y pon tu usuario como dueño del código:
+
+   ```sh
+   gh repo create <usuario>/pve-platform-iac --public --template teo-devops/pve-platform-iac --clone
+   cd pve-platform-iac && make init OWNER=@<usuario>
+   ```
+2. **Colaboradores: solo admins.** En una cuenta personal, un colaborador siempre tiene permiso de
+   escritura y podría lanzar workflows desde su rama sobre tus runners. Los devs y freelancers no
+   necesitan ningún rol: hacen fork y abren un PR.
+3. Workflows de personas de fuera: siempre con aprobación, y el `GITHUB_TOKEN` en solo lectura por
+   defecto:
+
+   ```sh
+   gh api -X PUT repos/<usuario>/pve-platform-iac/actions/permissions/workflow \
+     -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false
+   ```
+   Y en Settings → Actions → General → *Fork pull request workflows from outside collaborators*:
+   **Require approval for all outside collaborators**.
+4. Activa también: Settings → Code security → *Secret scanning* + *Push protection* y *Private
+   vulnerability reporting*.
+5. En los PR de personas de fuera, `pr-plan` **no planifica** hasta que un admin, después de leer
+   el PR, le pone la etiqueta `plan`. Un push nuevo quita la etiqueta
+   ([operador.md](operador.md#revisar-un-pr)).
+
+## 2. platform.yaml y projects.yaml
 
 Rellena todos los `TODO` (por PR, como cualquier cambio):
 
-- `homelab.yaml`: `proxmox.endpoint` (con un nombre o IP que esté en el certificado del nodo, ver
+- `platform.yaml`: `proxmox.endpoint` (con un nombre o IP que esté en el certificado del nodo, ver
   §3), `nodes` (nombre → IP de gestión), `datastore`, `image_datastore` (debe admitir el contenido
   «import»: Datacenter → Storage → `local` → Content), `bridge`, `vlan_tag` y `sdn_zone`; y la red
   de las VMs (`prefix`, `cidr_bits`, `gateway`, `dns` y `reserved_ips`).
 - `projects.yaml`: tu usuario de GitHub en `admins` con tu clave pública, la clave pública de la
-  cuenta de servicio `ci` (genera el par: `ssh-keygen -t ed25519 -f ci -C homelab-iac-ci -N ''`; la
+  cuenta de servicio `ci` (genera el par: `ssh-keygen -t ed25519 -f ci -C pve-platform-iac-ci -N ''`; la
   privada va al secreto `ANSIBLE_SSH_KEY` en §5) y los proyectos.
 
 `make check` tiene que pasar. `make preflight` avisa de los `TODO` que queden.
@@ -214,7 +249,7 @@ PR obligatorio, aprobación de CODEOWNERS, checks verdes, sin force-push ni borr
 (tampoco para admins: el admin también entra por PR).
 
 ```sh
-gh api -X POST repos/<ORG>/homelab-iac/rulesets --input - <<'JSON'
+gh api -X POST repos/<ORG>/pve-platform-iac/rulesets --input - <<'JSON'
 {
   "name": "main protegida",
   "target": "branch",
@@ -251,7 +286,7 @@ break-glass ([operador.md](operador.md#registro-de-break-glass)).
 Dos environments. **Ningún secreto a nivel de repo** ([R-10](seguridad.md#controles)).
 
 ```sh
-R=<ORG>/homelab-iac
+R=<ORG>/pve-platform-iac
 # production: solo despliega desde main
 gh api -X PUT repos/$R/environments/production --input - <<'JSON'
 {"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
@@ -285,24 +320,24 @@ gh variable set GHCR_USER             -R $R --body <usuario dueño del token de 
 Deploy key de `dataspace-mvp` (solo lectura):
 
 ```sh
-ssh-keygen -t ed25519 -f dataspace-mvp-deploy -C homelab-iac -N ''
-gh repo deploy-key add dataspace-mvp-deploy.pub -R teo-devops/dataspace-mvp -t homelab-iac   # sin --allow-write
+ssh-keygen -t ed25519 -f dataspace-mvp-deploy -C pve-platform-iac -N ''
+gh repo deploy-key add dataspace-mvp-deploy.pub -R teo-devops/dataspace-mvp -t pve-platform-iac   # sin --allow-write
 ```
 
-## 6. Runners del homelab
+## 6. Runners propios
 
-Dos **grupos de runners** de la organización, cada uno limitado a este repo y a sus workflows de
-`main` ([R-08](seguridad.md#controles)):
+**Con organización (§1 A):** dos **grupos de runners**, cada uno limitado a este repo y a sus
+workflows de `main` ([R-08](seguridad.md#controles)):
 
 ```sh
-RID=$(gh api repos/<ORG>/homelab-iac --jq .id)
-gh api orgs/<ORG>/actions/runner-groups -f name=homelab-plan -f visibility=selected \
+RID=$(gh api repos/<ORG>/pve-platform-iac --jq .id)
+gh api orgs/<ORG>/actions/runner-groups -f name=platform-plan -f visibility=selected \
   -F "selected_repository_ids[]=$RID" -F allows_public_repositories=false -F restricted_to_workflows=true \
-  -f "selected_workflows[]=<ORG>/homelab-iac/.github/workflows/pr-plan.yml@refs/heads/main"
-gh api orgs/<ORG>/actions/runner-groups -f name=homelab-apply -f visibility=selected \
+  -f "selected_workflows[]=<ORG>/pve-platform-iac/.github/workflows/pr-plan.yml@refs/heads/main"
+gh api orgs/<ORG>/actions/runner-groups -f name=platform-apply -f visibility=selected \
   -F "selected_repository_ids[]=$RID" -F allows_public_repositories=false -F restricted_to_workflows=true \
-  -f "selected_workflows[]=<ORG>/homelab-iac/.github/workflows/deploy.yml@refs/heads/main" \
-  -f "selected_workflows[]=<ORG>/homelab-iac/.github/workflows/drift.yml@refs/heads/main"
+  -f "selected_workflows[]=<ORG>/pve-platform-iac/.github/workflows/deploy.yml@refs/heads/main" \
+  -f "selected_workflows[]=<ORG>/pve-platform-iac/.github/workflows/drift.yml@refs/heads/main"
 gh api orgs/<ORG>/actions/runner-groups --jq '.runner_groups[] | "\(.id) \(.name) restringido=\(.restricted_to_workflows)"'
 ```
 
@@ -311,14 +346,25 @@ gh api orgs/<ORG>/actions/runner-groups --jq '.runner_groups[] | "\(.id) \(.name
 > en silencio: anótalo como en el riesgo [A-6](seguridad.md#riesgos-aceptados). La barrera principal
 > sigue siendo que los devs no pueden crear ramas ([D-04](diseno.md#decisiones)).
 
+**Con cuenta personal (§1 B):** no hay grupos; los runners se registran en el repo (`GH_REPO` en
+[runner/README.md](../runner/README.md)). La barrera son el opt-in de abajo, que los jobs con runner
+propio solo se disparan desde `main` (o con la etiqueta `plan`), y que no haya más colaboradores
+que los admins ([A-11](seguridad.md#riesgos-aceptados)).
+
 Después, en el host de runners, sigue [runner/README.md](../runner/README.md): imagen, PAT,
-servicios systemd y cortafuegos.
+servicios systemd y cortafuegos. Los jobs con runner propio están **apagados** hasta que los
+actives:
+
+```sh
+gh variable set PLATFORM_RUNNERS -R <OWNER>/pve-platform-iac --body true
+```
 
 ## 7. HCP Terraform
 
 1. Crea una organización de HCP **solo para esto** (`<HCP_ORG>`): el token del plan Free tiene
    alcance de organización, así que mejor que no haya nada más en ella.
-2. Crea el workspace `homelab` (CLI-driven) y ponlo en **Local**: Settings → General → Execution
+2. Crea el workspace `pve-platform` (CLI-driven; si quieres otro nombre, ponlo en la variable
+   del repo `TF_WORKSPACE` y expórtalo en local) y ponlo en **Local**: Settings → General → Execution
    Mode → Local. Así, HCP solo guarda el estado y hace de lock ([D-03](diseno.md#decisiones)).
 3. Token: Organization settings → Teams → owners → Team API token. Va a `TF_API_TOKEN` (§5).
 4. Prueba en local:
@@ -363,17 +409,17 @@ y anótalo en el CHANGELOG.
 
 ## 10. Acceso de los devs a las VMs (VPN)
 
-Las VMs viven en la red privada del homelab. Para **pedirlas** no hace falta red (es un PR), pero
+Las VMs viven en la red privada de la infraestructura. Para **pedirlas** no hace falta red (es un PR), pero
 para **entrar** por `make ssh` o `make tunnel` sí. La VPN es **Cloudflare Zero Trust**
 ([D-13](diseno.md#decisiones)): no se abre ningún puerto del router.
 
 ```
-portátil del dev                        Cloudflare                       homelab
+portátil del dev                        Cloudflare                       red interna
 WARP (login con GitHub) ──► Gateway: ¿quién eres? ¿puedes? ──► túnel ──► cloudflared ──► VM :22
                                                                 (saliente)   (LXC)
 ```
 
-- `cloudflared` corre en un LXC del homelab y abre un túnel **saliente** hacia Cloudflare.
+- `cloudflared` corre en un LXC de la plataforma y abre un túnel **saliente** hacia Cloudflare.
 - Cada dev instala el cliente **WARP** y entra en la organización de Zero Trust con su cuenta de
   GitHub. Desde ese momento, el tráfico hacia la red de las VMs va por el túnel.
 - Las **políticas de Gateway** deciden a qué puede llegar cada persona: los devs, solo al `:22` de
@@ -383,13 +429,13 @@ Requisitos que no cambian: solo la red de las VMs y solo el `:22` para los devs,
 acceso por persona, revocable; el admin en una política aparte.
 
 **Antes de empezar:** una cuenta de Cloudflare (no hace falta tener un dominio en ella) y un LXC
-pequeño en el homelab para el conector (Debian/Ubuntu, 1 vCPU, 512 MB). El LXC tiene que llegar a la
+pequeño en la infraestructura para el conector (Debian/Ubuntu, 1 vCPU, 512 MB). El LXC tiene que llegar a la
 red de las VMs y, para los admins, a la de gestión. Créalo **a mano y fuera de los pools del repo**:
 si lo gestionara el pipeline, un `apply` podría cortar el acceso. No uses el host de runners: allí
 vive el PAT (A-5).
 
 En los comandos, `<TEAM>` es el nombre de tu organización de Zero Trust, `<VMS>` la red de las VMs
-(`network.prefix` de `homelab.yaml` + `.0/24`) y `<GESTION>` la red de gestión de los nodos.
+(`network.prefix` de `platform.yaml` + `.0/24`) y `<GESTION>` la red de gestión de los nodos.
 
 1. **Organización de Zero Trust.** dash.cloudflare.com → Zero Trust. Elige el nombre del equipo
    (`<TEAM>`; tu portal será `https://<TEAM>.cloudflareaccess.com`) y el plan **Free** (hasta 50
@@ -406,7 +452,7 @@ En los comandos, `<TEAM>` es el nombre de tu organización de Zero Trust, `<VMS>
    - Include: *Emails* con la lista de personas (las de `admins` y `members` de `projects.yaml`).
    - Con organización de GitHub, en su lugar: *GitHub organization* = `<ORG>`.
    - Login method: GitHub.
-4. **Túnel.** Networks → Tunnels → Create a tunnel → *Cloudflared* → nombre `homelab`. El panel
+4. **Túnel.** Networks → Tunnels → Create a tunnel → *Cloudflared* → nombre `platform`. El panel
    muestra el comando con el token: ejecútalo **en el LXC del conector**. Es, más o menos:
 
    ```sh
@@ -422,7 +468,7 @@ En los comandos, `<TEAM>` es el nombre de tu organización de Zero Trust, `<VMS>
 5. **Qué tráfico va por WARP.** Settings → WARP Client → Device settings → perfil Default → Split
    Tunnels. Por defecto está en modo *Exclude*, y **excluye las redes privadas**, que es justo donde
    están `<VMS>` y `<GESTION>`. Cámbialo a modo **Include** con solo `<VMS>` y `<GESTION>`. Así, por
-   Cloudflare pasa solo el tráfico hacia el homelab, y el resto sale por la red normal del dev.
+   Cloudflare pasa solo el tráfico hacia la infraestructura, y el resto sale por la red normal del dev.
 6. **Proxy de Gateway.** Settings → Network → activa el proxy **TCP**. Sin él no se aplican las
    políticas por identidad a las redes privadas.
 7. **Políticas.** Gateway → Firewall policies → **Network**, en este orden (se evalúan de arriba
@@ -432,7 +478,7 @@ En los comandos, `<TEAM>` es el nombre de tu organización de Zero Trust, `<VMS>
    |---|---|---|---|
    | 1 | `admins-gestion` | Allow | Destination IP en `<GESTION>` **y** puerto `8006` o `22` **y** el email del usuario está en la lista de admins |
    | 2 | `devs-ssh-vms` | Allow | Destination IP en `<VMS>` **y** puerto `22` **y** el email del usuario está en la lista de devs y admins |
-   | 3 | `homelab-resto` | Block | Destination IP en `<VMS>` o en `<GESTION>` |
+   | 3 | `platform-resto` | Block | Destination IP en `<VMS>` o en `<GESTION>` |
 
    Si quieres que nadie llegue siquiera a las VMs de otros proyectos, sustituye la regla 2 por una
    por proyecto: destino = el rango de IP de ese proyecto en `projects.yaml`, usuarios = sus
@@ -459,7 +505,7 @@ Proxmox VE no escribe copias directamente en S3. Quien lo hace es **Proxmox Back
 con un datastore cuyo *backend* es un bucket S3 ([D-14](diseno.md#decisiones)):
 
 ```
-nodos PVE ──vzdump──► PBS (VM, caché local 64–128 GiB) ──HTTPS S3──► SeaweedFS (bucket pbs-homelab)
+nodos PVE ──vzdump──► PBS (VM, caché local 64–128 GiB) ──HTTPS S3──► SeaweedFS (bucket pbs-platform)
              incremental, cifrado en el nodo         deduplicado              otra máquina
 ```
 
@@ -477,21 +523,21 @@ nodos PVE ──vzdump──► PBS (VM, caché local 64–128 GiB) ──HTTPS 
   pools del repo**, igual que el LXC de Cloudflare.
 
 En los comandos: `<S3>` es el host del S3 de SeaweedFS, `<PBS>` la IP de la VM de PBS y
-`pbs-homelab` el bucket.
+`pbs-platform` el bucket.
 
 1. **Bucket y credencial en SeaweedFS.** Crea un bucket solo para esto y una identidad limitada a
    él:
 
    ```sh
-   echo 's3.bucket.create -name pbs-homelab' | weed shell
+   echo 's3.bucket.create -name pbs-platform' | weed shell
    ```
    En el `s3.json` de identidades (el que pasas con `weed s3 -config`), añade una entrada y
    reinicia el S3:
 
    ```json
-   {"name": "pbs-homelab",
+   {"name": "pbs-platform",
     "credentials": [{"accessKey": "<AK>", "secretKey": "<SK>"}],
-    "actions": ["Read:pbs-homelab", "Write:pbs-homelab", "List:pbs-homelab"]}
+    "actions": ["Read:pbs-platform", "Write:pbs-platform", "List:pbs-platform"]}
    ```
    PBS necesita leer, escribir, listar y **borrar** objetos (su recolector de basura borra los
    bloques que ya no usa ninguna copia). Pruébalo antes de seguir:
@@ -499,7 +545,7 @@ En los comandos: `<S3>` es el host del S3 de SeaweedFS, `<PBS>` la IP de la VM d
    ```sh
    export AWS_ACCESS_KEY_ID=<AK> AWS_SECRET_ACCESS_KEY=<SK>
    S3="aws --endpoint-url https://<S3>:8333 s3"     # añade --no-verify-ssl si el certificado es autofirmado
-   echo hola > t && $S3 cp t s3://pbs-homelab/t && $S3 ls s3://pbs-homelab/ && $S3 rm s3://pbs-homelab/t
+   echo hola > t && $S3 cp t s3://pbs-platform/t && $S3 ls s3://pbs-platform/ && $S3 rm s3://pbs-platform/t
    ```
    **No pongas** en el bucket reglas de expiración ni de ciclo de vida: borrarían bloques que siguen
    en uso y romperían las copias. Si el certificado es autofirmado, saca su huella:
@@ -518,18 +564,18 @@ En los comandos: `<S3>` es el host del S3 de SeaweedFS, `<PBS>` la IP de la VM d
      --endpoint '<S3>' --port 8333 --region us-east-1 --path-style true \
      --access-key '<AK>' --secret-key '<SK>' \
      --fingerprint '<huella sha256, solo si es autofirmado>'
-   proxmox-backup-manager datastore create homelab /mnt/pbs-cache/homelab \
-     --backend type=s3,client=seaweedfs,bucket=pbs-homelab
+   proxmox-backup-manager datastore create platform /mnt/pbs-cache/platform \
+     --backend type=s3,client=seaweedfs,bucket=pbs-platform
    ```
    SeaweedFS usa direcciones *path-style* (`https://<S3>/<bucket>/…`), de ahí `--path-style true`.
    Si algún flag no coincide en tu versión de PBS, usa la GUI.
-4. **Retención, limpieza y verificación** (en PBS, Datastore → `homelab`):
+4. **Retención, limpieza y verificación** (en PBS, Datastore → `platform`):
 
    ```sh
-   proxmox-backup-manager prune-job create homelab-retencion --store homelab --schedule daily \
+   proxmox-backup-manager prune-job create platform-retencion --store platform --schedule daily \
      --keep-daily 7 --keep-weekly 4 --keep-monthly 6
-   proxmox-backup-manager datastore update homelab --gc-schedule daily
-   proxmox-backup-manager verify-job create homelab-verificar --store homelab --schedule weekly \
+   proxmox-backup-manager datastore update platform --gc-schedule daily
+   proxmox-backup-manager verify-job create platform-verificar --store platform --schedule weekly \
      --ignore-verified true --outdated-after 30
    ```
    Verificar implica descargar los bloques desde SeaweedFS: con `--outdated-after 30`, cada bloque
@@ -539,27 +585,27 @@ En los comandos: `<S3>` es el host del S3 de SeaweedFS, `<PBS>` la IP de la VM d
    ```sh
    proxmox-backup-manager user create pve@pbs
    proxmox-backup-manager user generate-token pve@pbs backup         # el secreto sale UNA vez
-   proxmox-backup-manager acl update /datastore/homelab DatastoreBackup --auth-id 'pve@pbs!backup'
+   proxmox-backup-manager acl update /datastore/platform DatastoreBackup --auth-id 'pve@pbs!backup'
    proxmox-backup-manager cert info | grep -i fingerprint             # huella de PBS, para el paso 6
    ```
 6. **Añade PBS como storage en Proxmox VE** (en un nodo; con cluster, se replica solo), con
    **cifrado en el cliente**:
 
    ```sh
-   pvesm add pbs pbs-homelab --server <PBS> --datastore homelab \
+   pvesm add pbs pbs-platform --server <PBS> --datastore platform \
      --username 'pve@pbs!backup' --password '<secreto del token>' \
      --fingerprint '<huella de PBS>' --encryption-key autogen
    ```
    > [!IMPORTANT]
-   > `autogen` crea la clave en `/etc/pve/priv/storage/pbs-homelab.enc`. **Sin esa clave no se puede
+   > `autogen` crea la clave en `/etc/pve/priv/storage/pbs-platform.enc`. **Sin esa clave no se puede
    > restaurar ninguna copia**, y si cae el host, cae con él. Guarda su contenido **fuera del
-   > homelab** (gestor de contraseñas) ahora mismo
+   > la infraestructura** (gestor de contraseñas) ahora mismo
    > ([credenciales.md](credenciales.md#copias-de-seguridad)).
 7. **Trabajo de copia** (Datacenter → Backup → Add, o por CLI): cada noche, todas las VMs y LXC
    menos la de PBS (no tiene sentido copiar PBS dentro de sí mismo).
 
    ```sh
-   pvesh create /cluster/backup --id homelab-diario --schedule '02:30' --storage pbs-homelab \
+   pvesh create /cluster/backup --id platform-diario --schedule '02:30' --storage pbs-platform \
      --all 1 --exclude <vmid-de-PBS> --mode snapshot --notes-template '{{guestname}}'
    ```
    A las 02:30 no suele haber deploys. Si coincide uno, Terraform puede encontrarse la VM bloqueada
@@ -569,14 +615,14 @@ En los comandos: `<S3>` es el host del S3 de SeaweedFS, `<PBS>` la IP de la VM d
    desde un timer de systemd en cada nodo:
 
    ```sh
-   PBS_REPOSITORY='pve@pbs!backup@<PBS>:homelab' PBS_PASSWORD='<secreto>' PBS_FINGERPRINT='<huella>' \
-     proxmox-backup-client backup pve-etc.pxar:/etc/pve --keyfile /etc/pve/priv/storage/pbs-homelab.enc
+   PBS_REPOSITORY='pve@pbs!backup@<PBS>:platform' PBS_PASSWORD='<secreto>' PBS_FINGERPRINT='<huella>' \
+     proxmox-backup-client backup pve-etc.pxar:/etc/pve --keyfile /etc/pve/priv/storage/pbs-platform.enc
    ```
 
 **Comprobación:**
-- Lanza el trabajo a mano (Datacenter → Backup → `homelab-diario` → Run now). Tiene que terminar
-  en `OK`, y en SeaweedFS tienen que aparecer objetos con el prefijo `homelab/`
-  (`$S3 ls s3://pbs-homelab/ --recursive | head`).
+- Lanza el trabajo a mano (Datacenter → Backup → `platform-diario` → Run now). Tiene que terminar
+  en `OK`, y en SeaweedFS tienen que aparecer objetos con el prefijo `platform/`
+  (`$S3 ls s3://pbs-platform/ --recursive | head`).
 - Después, **restaura una VM de prueba**, como en
   [runbooks/restaurar-vm.md](runbooks/restaurar-vm.md#prueba-mensual). Una copia que no se ha
   restaurado nunca no está probada.

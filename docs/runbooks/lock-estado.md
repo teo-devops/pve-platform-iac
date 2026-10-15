@@ -1,7 +1,7 @@
 # Runbook: estado de Terraform bloqueado
 
 **Síntoma:** un plan o un apply espera 5 minutos y falla con `Error acquiring the state lock`, o
-HCP muestra el workspace `homelab` como *Locked*.
+HCP muestra el workspace `pve-platform` como *Locked*.
 **Quién:** un admin.
 **Resultado esperado:** el workspace queda desbloqueado y el siguiente deploy funciona.
 
@@ -15,7 +15,7 @@ HCP muestra el workspace `homelab` como *Locked*.
 
 Lo más habitual: un job cancelado o un runner muerto a mitad de apply. El lock se queda puesto.
 
-- HCP → workspace `homelab` → Settings → Locking → **Force unlock** (y apunta el motivo).
+- HCP → workspace `pve-platform` → Settings → Locking → **Force unlock** (y apunta el motivo).
 - O en local:
 
   ```sh

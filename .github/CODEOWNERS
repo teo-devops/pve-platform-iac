@@ -1,13 +1,13 @@
 # Quien tiene que aprobar cada cambio. El ruleset de main exige la aprobacion de
 # un CODEOWNER (docs/bootstrap.md §4), asi que ningun PR entra sin un admin.
-# Cambia <ORG> por la organizacion de GitHub (make preflight lo comprueba).
-*                   @<ORG>/infra-admins
+# Dueno del codigo: `make init OWNER=...` lo cambia (un equipo @org/equipo o un @usuario).
+*                   @teo-devops
 
 # Lo que define quien tiene acceso y con que: siempre un admin, aunque haya mas
 # revisores en el futuro.
-/projects.yaml      @<ORG>/infra-admins
-/homelab.yaml       @<ORG>/infra-admins
-/.github/           @<ORG>/infra-admins
-/terraform/         @<ORG>/infra-admins
-/scripts/           @<ORG>/infra-admins
-/runner/            @<ORG>/infra-admins
+/projects.yaml      @teo-devops
+/platform.yaml      @teo-devops
+/.github/           @teo-devops
+/terraform/         @teo-devops
+/scripts/           @teo-devops
+/runner/            @teo-devops

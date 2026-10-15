@@ -1,6 +1,6 @@
 # Una VM a partir de la cloud image de Ubuntu descargada en su nodo (main.tf).
 #
-# Diferencias con el modulo de proxmox-iac del que viene:
+# Diferencias con el modulo del diseño anterior del que viene:
 #   - Sin replicacion por `ssh root@nodo` + pvesh, y disco con `import_from` en vez
 #     de `file_id`: el provider no hace NADA por SSH, y el pipeline no necesita
 #     ninguna clave root de los nodos (docs/seguridad.md, R-06).

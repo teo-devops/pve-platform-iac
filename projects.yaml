@@ -18,11 +18,11 @@
 
 admins:
   teo-devops:
-    ssh_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAv09D1oyYwrseIai038HzGYC1q6zUtIix21Ql8HMOJj mgil@i2cat-9S715P214054ZRA000014
+    ssh_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAv09D1oyYwrseIai038HzGYC1q6zUtIix21Ql8HMOJj teo-devops
 
 service:
   ci:
-    ssh_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDHA2VfkoOp6v0zATB6mTO2a1hwLkt2CRsevDG16lcDM homelab-iac-ci
+    ssh_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDHA2VfkoOp6v0zATB6mTO2a1hwLkt2CRsevDG16lcDM pve-platform-iac-ci
 
 projects:
   # Dataspaces propios (teo-devops/dataspace-mvp). Ejemplo: cambia o quita lo que no aplique.

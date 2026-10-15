@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=../../../schema/vm.schema.json
+# EJEMPLO (no se aplica: vive en examples/). Una peticion real va en requests/vms/
+# y se crea con `make new-vm`. Referencia de cada campo: docs/peticiones.md
+project: equipo-a
+flavor: vm-medium
+profile: vm
+vmid: 1101
+ip: 192.168.50.101   # TODO: <network.prefix>.<octeto del rango del proyecto>
+description: Base de datos de pruebas del equipo A

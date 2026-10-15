@@ -9,13 +9,13 @@ está en [diseno.md](diseno.md) y [seguridad.md](seguridad.md).
 | Workflow | Cuándo | Runner | Secretos | Qué hace |
 |---|---|---|---|---|
 | `pr-validate.yml` | PR, push a main y a mano | GitHub (`ubuntu-latest`) | ninguno | Linters y validaciones sin credenciales |
-| `pr-plan.yml` | PR abierto o actualizado | `homelab-plan` | env `plan` | Plan de solo lectura de las peticiones del PR, comentado en el PR |
-| `deploy.yml` | push a main (salvo solo docs) y a mano | `homelab-apply` | env `production` | plan → apply → known-hosts → configure |
-| `drift.yml` | cada día 05:17 UTC y a mano | `homelab-apply` | env `production` | Plan de deriva; falla y abre un issue si hay cambios |
+| `pr-plan.yml` | PR abierto o actualizado | `platform-plan` | env `plan` | Plan de solo lectura de las peticiones del PR, comentado en el PR |
+| `deploy.yml` | push a main (salvo solo docs) y a mano | `platform-apply` | env `production` | plan → apply → known-hosts → configure |
+| `drift.yml` | cada día 05:17 UTC y a mano | `platform-apply` | env `production` | Plan de deriva; falla y abre un issue si hay cambios |
 
 ## pr-validate
 
-Corre el código del PR **tal cual**, por eso va en runners de GitHub, sin secretos ni red al homelab
+Corre el código del PR **tal cual**, por eso va en runners de GitHub, sin secretos ni red a la infraestructura
 ([R-01](seguridad.md#controles)). Sus jobs son los checks obligatorios del ruleset.
 
 | Job | Comprueba | Si falla |
@@ -26,7 +26,7 @@ Corre el código del PR **tal cual**, por eso va en runners de GitHub, sin secre
 | `workflows (actionlint)` | actionlint y que toda action esté fijada por SHA completo | Fija la action por SHA, con la versión en un comentario |
 
 > Un PR desde un fork necesita que un admin pulse **Approve and run** la primera vez
-> ([bootstrap.md §1](bootstrap.md#1-organización-de-github), paso 5).
+> ([bootstrap.md §1](bootstrap.md#1-organización-de-github-o-cuenta-personal), paso 5).
 
 ## pr-plan
 
@@ -35,7 +35,7 @@ Detalle de seguridad en [seguridad.md R-02](seguridad.md#r-02-plan-de-pr-sin-eje
 | Job | Dónde | Qué hace |
 |---|---|---|
 | `gate` | GitHub, sin secretos | Lista los ficheros del PR. Solo sigue si **todos** son `requests/{vms,clusters}/*.yaml` y el autor es de la organización |
-| `plan` | `homelab-plan`, env `plan` | Checkout de main + ficheros del PR → esquema + `iac check` → `terraform plan -lock=false -refresh=false` → comentario en el PR (uno por PR, se actualiza en cada push) |
+| `plan` | `platform-plan`, env `plan` | Checkout de main + ficheros del PR → esquema + `iac check` → `terraform plan -lock=false -refresh=false` → comentario en el PR (uno por PR, se actualiza en cada push) |
 
 **El comentario:** una tabla por petición (crear, modificar, recrear y destruir), un aviso si algo
 se destruye y el plan completo plegado. Si el PR toca algo fuera de `requests/`, el resumen del run

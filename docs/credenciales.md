@@ -12,19 +12,19 @@ Piden por PR, y el pipeline aplica con secretos que solo ven los jobs de `main`.
 |---|---|---|---|
 | `PM_APPLY_TOKEN` | env `production` | deploy (plan, apply), drift | Token `iac@pve!apply`: rol `IaCApply` en pools, storages, zona y nodos. Nada en `/` |
 | `PM_PLAN_TOKEN` | env `plan` | pr-plan | Token `iac@pve!plan`: `PVEAuditor` en las mismas rutas. Solo lectura |
-| `TF_API_TOKEN` | envs `production` y `plan` | todos los jobs con Terraform | Token de equipo owners de la organización de HCP, que solo contiene el workspace `homelab` |
+| `TF_API_TOKEN` | envs `production` y `plan` | todos los jobs con Terraform | Token de equipo owners de la organización de HCP, que solo contiene el workspace `pve-platform` |
 | `ANSIBLE_SSH_KEY` | env `production` | deploy (configure) | Privada de la cuenta de servicio `ci`: entra como `ops` en todas las VMs |
 | `PLAN_ENC_KEY` | env `production` | deploy (plan, apply) | Clave simétrica que cifra el plan entre jobs |
 | `GHCR_READ_TOKEN` | env `production` | deploy (configure, perfil dataspace-kind) | PAT clásico con **solo** `read:packages` |
 | `DATASPACE_MVP_DEPLOY_KEY` | env `production` | deploy (configure, perfil dataspace-kind) | Deploy key de **solo lectura** de `teo-devops/dataspace-mvp` |
 | `TF_CLOUD_ORGANIZATION` | variable del repo | todos | Nombre de la organización de HCP (no es secreto) |
 | `GHCR_USER` | variable del repo | configure | Usuario dueño de `GHCR_READ_TOKEN` (no es secreto) |
-| PAT de runners | `/etc/homelab-runner/env` en el host de runners | `runner/supervisor.sh` | Fine-grained, organización, solo «Self-hosted runners: read and write» |
+| PAT de runners | `/etc/platform-runner/env` en el host de runners | `runner/supervisor.sh` | Fine-grained, organización, solo «Self-hosted runners: read and write» |
 | Token del túnel de Cloudflare | servicio `cloudflared` en el LXC del conector | `cloudflared` | Permite levantar un conector de **ese** túnel ([abajo](#túnel-de-cloudflare)) |
 | Secret de la OAuth App de GitHub | Zero Trust → Login methods | Cloudflare | Login de las personas en WARP; no da acceso a GitHub |
-| Clave de cifrado de las copias | `/etc/pve/priv/storage/pbs-homelab.enc` + **copia fuera del homelab** | nodos PVE (vzdump) | Sin ella no se restaura nada ([abajo](#copias-de-seguridad)) |
-| Token `pve@pbs!backup` | `/etc/pve/priv/storage/pbs-homelab.pw` | nodos PVE | `DatastoreBackup` en `/datastore/homelab`: hacer y restaurar sus copias |
-| Access key S3 `pbs-homelab` | endpoint S3 de PBS | PBS | Leer, escribir y listar solo el bucket `pbs-homelab` |
+| Clave de cifrado de las copias | `/etc/pve/priv/storage/pbs-platform.enc` + **copia fuera de la infraestructura** | nodos PVE (vzdump) | Sin ella no se restaura nada ([abajo](#copias-de-seguridad)) |
+| Token `pve@pbs!backup` | `/etc/pve/priv/storage/pbs-platform.pw` | nodos PVE | `DatastoreBackup` en `/datastore/platform`: hacer y restaurar sus copias |
+| Access key S3 `pbs-platform` | endpoint S3 de PBS | PBS | Leer, escribir y listar solo el bucket `pbs-platform` |
 
 Los environments `production` y `plan` solo despliegan desde `main` ([bootstrap.md §5](bootstrap.md#5-environments-y-secretos)),
 así que ningún job de una rama o de un fork recibe estos secretos.
@@ -52,7 +52,7 @@ así que ningún job de una rama o de un fork recibe estos secretos.
   ```sh
   ssh root@<nodo> pveum user token remove iac@pve apply
   make proxmox-acl > acl.sh && scp acl.sh root@<nodo>: && ssh root@<nodo> bash acl.sh   # crea el token nuevo
-  gh secret set PM_APPLY_TOKEN -R <ORG>/homelab-iac --env production
+  gh secret set PM_APPLY_TOKEN -R <ORG>/pve-platform-iac --env production
   ```
   Después, lanza `drift` a mano: tiene que funcionar con el token nuevo.
 
@@ -66,7 +66,7 @@ que permite es **leer** el inventario de los pools del repo. Para rotarlo, igual
 
 En los workflows se expone como `TF_TOKEN_app_terraform_io`, que es el nombre que lee Terraform. Es
 el token del equipo owners de una organización de HCP **dedicada**: puede leer y escribir el estado
-del workspace `homelab`. El plan de PR también lo usa ([A-1](seguridad.md#riesgos-aceptados)).
+del workspace `pve-platform`. El plan de PR también lo usa ([A-1](seguridad.md#riesgos-aceptados)).
 **Rotar:** HCP → Organization settings → Teams → owners → Regenerate token →
 `gh secret set TF_API_TOKEN` en `production` y en `plan`.
 
@@ -86,16 +86,16 @@ claves de `admins` y `service` de `projects.yaml`, y el rol `base` las vuelve a 
 instala la nueva) y después cambia el secreto:
 
 ```sh
-ssh-keygen -t ed25519 -f ci -C homelab-iac-ci -N ''
+ssh-keygen -t ed25519 -f ci -C pve-platform-iac-ci -N ''
 # PR: projects.yaml -> service.ci.ssh_key = contenido de ci.pub ; merge y espera al deploy
-gh secret set ANSIBLE_SSH_KEY -R <ORG>/homelab-iac --env production < ci && shred -u ci
+gh secret set ANSIBLE_SSH_KEY -R <ORG>/pve-platform-iac --env production < ci && shred -u ci
 ```
 
 ## Clave del plan (`PLAN_ENC_KEY`)
 
 Cifra el artefacto del plan entre los jobs `plan` y `apply` ([R-09](seguridad.md#controles)). Se
 puede rotar en cualquier momento salvo con un deploy en curso:
-`openssl rand -base64 48 | gh secret set PLAN_ENC_KEY -R <ORG>/homelab-iac --env production`.
+`openssl rand -base64 48 | gh secret set PLAN_ENC_KEY -R <ORG>/pve-platform-iac --env production`.
 
 ## Credenciales del MVP de dataspace
 
@@ -121,18 +121,18 @@ export DATASPACE_MVP_DEPLOY_KEY="$(cat ~/ruta/a/la/deploy-key)"
 
 Lo usa `runner/supervisor.sh` para pedir a GitHub configuraciones JIT de runner. Fine-grained, con
 la organización como propietario del recurso y solo el permiso «Self-hosted runners: Read and
-write». Vive en `/etc/homelab-runner/env` (root, `0600`). En el host de runners solo entran los
+write». Vive en `/etc/platform-runner/env` (root, `0600`). En el host de runners solo entran los
 admins. Caduca: pon una fecha y un recordatorio. **Rotar:** crea uno nuevo, cámbialo en el fichero y
-`systemctl restart 'homelab-runner@*'`.
+`systemctl restart 'platform-runner@*'`.
 
 ## Túnel de Cloudflare
 
 Hay dos credenciales:
 
-- **Token del túnel.** Con él, cualquiera puede levantar un conector del túnel `homelab`, que
+- **Token del túnel.** Con él, cualquiera puede levantar un conector del túnel `platform`, que
   recibiría el tráfico de los devs hacia sus rutas. `cloudflared service install` lo guarda en la
   unidad systemd del LXC del conector, y en ese LXC solo entran los admins. **Rotar:** en Networks →
-  Tunnels → `homelab`, crea un túnel nuevo (`homelab-2`), instala su conector, mueve las rutas,
+  Tunnels → `platform`, crea un túnel nuevo (`platform-2`), instala su conector, mueve las rutas,
   comprueba que llegas y borra el viejo.
 - **Secret de la OAuth App de GitHub.** Vive en Zero Trust → Settings → Authentication. Solo sirve
   para el login de las personas. **Rotar:** genera uno nuevo en la OAuth App, pégalo en Cloudflare,
@@ -143,26 +143,26 @@ Para quitarle el acceso a **una persona**, mira
 
 ## Copias de seguridad
 
-- **Clave de cifrado** (`pbs-homelab.enc`). Es la más crítica: sin ella las copias no sirven, y vive
+- **Clave de cifrado** (`pbs-platform.enc`). Es la más crítica: sin ella las copias no sirven, y vive
   en el mismo `/etc/pve` que protege. En cuanto la crees, guarda su contenido en el gestor de
   contraseñas:
 
   ```sh
-  cat /etc/pve/priv/storage/pbs-homelab.enc     # JSON: pégalo entero en el gestor de contraseñas
+  cat /etc/pve/priv/storage/pbs-platform.enc     # JSON: pégalo entero en el gestor de contraseñas
   ```
   Para restaurar en un Proxmox nuevo: añade el storage como en §11 paso 6, pero con
   `--encryption-key "$(cat clave.enc)"` en lugar de `autogen`. **Rotar** no tiene sentido: una clave
   nueva solo cifra las copias nuevas, y las antiguas siguen necesitando la vieja.
 - **Token `pve@pbs!backup`.** Solo puede hacer copias y restaurar las suyas. **Rotar:**
   `proxmox-backup-manager user generate-token pve@pbs backup2`, después `acl update` como en el paso
-  5, `pvesm set pbs-homelab --username 'pve@pbs!backup2' --password '<nuevo>'` y, al final,
+  5, `pvesm set pbs-platform --username 'pve@pbs!backup2' --password '<nuevo>'` y, al final,
   `proxmox-backup-manager user delete-token pve@pbs backup`.
 - **Access key S3.** Vive en la configuración del endpoint de PBS. **Rotar:** crea otra identidad
   en el `s3.json` de SeaweedFS, cámbiala en PBS (Configuration → Remotes → S3 Endpoints → Edit) y
   borra la vieja.
-- **Para recuperar todo si cae el host**, necesitas tener **fuera del homelab** la clave de
-  cifrado, la access key S3 y el nombre del datastore (`homelab`). Con eso, en un PBS nuevo:
-  `datastore create homelab … --reuse-datastore true --overwrite-in-use true`, y el storage en PVE
+- **Para recuperar todo si cae el host**, necesitas tener **fuera de la infraestructura** la clave de
+  cifrado, la access key S3 y el nombre del datastore (`platform`). Con eso, en un PBS nuevo:
+  `datastore create platform … --reuse-datastore true --overwrite-in-use true`, y el storage en PVE
   como arriba.
 
 ## Lo que NO es una credencial

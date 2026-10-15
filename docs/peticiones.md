@@ -11,19 +11,19 @@ línea de cada fichero generado los enlaza.
 
 - **Un fichero = una VM o un cluster.** El nombre del fichero (sin `.yaml`) es el nombre de la VM
   (el hostname) o el prefijo del cluster: minúsculas, números y `-`, sin empezar ni terminar en `-`.
-  Por convención, empieza por el proyecto (`dataspace-demo`).
+  Por convención, empieza por el proyecto (`equipo-a-db`).
 - **Extensión `.yaml`**, no `.yml`: Terraform no lee los `.yml` (`make check` avisa).
 - **Renombrar el fichero destruye y recrea** sus VMs; **borrarlo las destruye**. Discos incluidos.
 - `project` decide el pool de Proxmox, los rangos válidos y quién entra. El pool **nunca** se
   escribe en la petición.
 - VMID e IP tienen que estar en los rangos del proyecto (`projects.yaml`), no repetirse y no caer en
-  `network.reserved_ips` de `homelab.yaml`.
+  `network.reserved_ips` de `platform.yaml`.
 
 ## VM suelta: `requests/vms/<nombre>.yaml`
 
 ```yaml
 # yaml-language-server: $schema=../../schema/vm.schema.json
-project: dataspace        # obligatorio: proyecto de projects.yaml
+project: equipo-a         # obligatorio: proyecto de projects.yaml
 flavor: vm-small          # tamaño (por defecto vm-small); tiene que admitirlo el perfil
 profile: vm               # qué se instala (por defecto vm)
 vmid: 1101                # obligatorio, en el rango del proyecto
@@ -37,11 +37,11 @@ description: Base de datos de pruebas   # opcional, solo informativo
 | `flavor` | no (`vm-small`) | Uno de los que admite el perfil (tabla de abajo) |
 | `profile` | no (`vm`) | `vm`, `monitoring`, `dataspace-kind` |
 | `vmid` | sí | Entero en el rango de VMIDs del proyecto |
-| `ip` | sí | IPv4 de la red de `homelab.yaml`, con el último octeto en el rango del proyecto |
+| `ip` | sí | IPv4 de la red de `platform.yaml`, con el último octeto en el rango del proyecto |
 | `mvp` | solo con `dataspace-kind` | Ver abajo |
 | `description` | no | Texto de hasta 200 caracteres |
 
-### Bloque `mvp:` (perfil `dataspace-kind`)
+### Bloque `mvp:` (perfil extra `dataspace-kind`)
 
 ```yaml
 mvp:
@@ -58,7 +58,7 @@ en [dataspace.md](dataspace.md).
 
 ```yaml
 # yaml-language-server: $schema=../../schema/cluster.schema.json
-project: dataspace
+project: equipo-a
 flavor_size: k3s-mini     # familia de cluster_sizes
 workers: 2                # por defecto, el de la familia; minimo min_workers
 vmid_base: 1110           # VMID del master; los workers usan los siguientes (1111, 1112)
@@ -67,7 +67,7 @@ k3s_version: v1.33.5+k3s1 # opcional; por defecto, la de la familia
 ```
 
 Crea `<nombre>-master` y `<nombre>-worker-01..NN`, repartidos por turnos entre los nodos de
-`homelab.yaml`. Todo el bloque de VMIDs e IPs (`base` … `base + workers`) tiene que estar libre y
+`platform.yaml`. Todo el bloque de VMIDs e IPs (`base` … `base + workers`) tiene que estar libre y
 en el rango del proyecto: el asistente lo busca.
 
 ## Catálogo
@@ -93,7 +93,7 @@ Tabla generada desde `catalog/` (`make docs`; el CI comprueba que está al día)
 |---|---|---|---|
 | `vm` | `vm-small`, `vm-medium`, `vm-large` | — | VM Ubuntu con la configuracion base (cuentas del proyecto, chrony, node-exporter) |
 | `monitoring` | `vm-medium`, `vm-large` | — | Prometheus + Grafana que monitorizan todas las VMs del repo |
-| `dataspace-kind` | `ds-mvp-kind`, `ds-mvp-kind-lite` | `mvp:` | Docker + kind con un MVP de dataspace (teo-devops/dataspace-mvp) desplegado |
+| `dataspace-kind` | `ds-mvp-kind`, `ds-mvp-kind-lite` | `mvp:` | Extra: Docker + kind con un MVP de dataspace (teo-devops/dataspace-mvp) desplegado |
 <!-- catalogo:fin -->
 
 Cambiar el catálogo lo hace el admin, por PR. Cambiar los números de un flavor afecta a **todas** las

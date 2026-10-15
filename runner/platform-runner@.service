@@ -1,0 +1,15 @@
+# Un runner efimero de GitHub Actions del tipo %i (plan | apply).
+#   sudo cp runner/platform-runner@.service /etc/systemd/system/
+#   sudo systemctl enable --now platform-runner@plan platform-runner@apply
+[Unit]
+Description=Runner efimero de pve-platform-iac (%i)
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+ExecStart=/opt/pve-platform-iac/runner/supervisor.sh %i
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

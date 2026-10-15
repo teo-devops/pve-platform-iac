@@ -17,8 +17,11 @@ vm_profiles:
     playbooks: [site, monitoring]
     flavors: [vm-medium, vm-large]
 
+  # EXTRA (opcional): ejemplo de perfil con una carga propia. Depende de un repo e
+  # imagenes privadas (teo-devops/dataspace-mvp); si no lo usas, borra este bloque y
+  # sus flavors ds-mvp-* (docs/extender.md explica como hacer el tuyo).
   dataspace-kind:
-    description: "Docker + kind con un MVP de dataspace (teo-devops/dataspace-mvp) desplegado"
+    description: "Extra: Docker + kind con un MVP de dataspace (teo-devops/dataspace-mvp) desplegado"
     playbooks: [site, dataspace-kind]
     flavors: [ds-mvp-kind, ds-mvp-kind-lite]
     requires: [mvp]

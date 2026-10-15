@@ -42,7 +42,7 @@
     msg: >-
       La VM no alcanza {{ mvp_reach.results | selectattr('failed') | map(attribute='item') | join(', ') }}
       por el 443. Sin eso no se pueden bajar las imagenes: es un problema de red o
-      de DNS de la VM (homelab.yaml network.dns), no del MVP.
+      de DNS de la VM (platform.yaml network.dns), no del MVP.
   when: mvp_reach.results | selectattr('failed') | list | length > 0
 
 - name: Instalar Node.js y npm (para Bruno)

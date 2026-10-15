@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://homelab-iac/schema/cluster.schema.json",
+  "$id": "https://pve-platform-iac/schema/cluster.schema.json",
   "title": "Peticion de cluster k3s (requests/clusters/<nombre>.yaml)",
   "description": "Estructura. Rangos, familia y minimo de workers los comprueba `scripts/iac check`. Referencia: docs/peticiones.md",
   "type": "object",

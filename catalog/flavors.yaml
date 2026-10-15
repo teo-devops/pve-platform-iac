@@ -2,7 +2,7 @@
 # asistente (`make new-vm` / `make new-cluster`) solo ofrece lo que hay aqui y la
 # tabla de docs/peticiones.md la genera `make docs` (el CI comprueba que esta al dia).
 #
-# Cerrado a proposito: la capacidad del homelab es la suma de estos numeros. Lo
+# Cerrado a proposito: la capacidad de la infraestructura es la suma de estos numeros. Lo
 # cambia el admin, por PR, y afecta a TODAS las VMs del flavor en el siguiente
 # apply (Terraform redimensiona cores/RAM; el disco solo crece).
 #

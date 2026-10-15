@@ -6,8 +6,9 @@ aprueba.
 
 **Qué necesitas antes de empezar:**
 
-- Una cuenta de GitHub, que el admin haya añadido a la organización y como miembro de tu proyecto en
-  `projects.yaml` ([operador.md](operador.md#alta-y-baja-de-una-persona)).
+- Una cuenta de GitHub, dada de alta por el admin como miembro de tu proyecto en `projects.yaml`
+  ([operador.md](operador.md#alta-y-baja-de-una-persona)). Si la instancia vive en una organización,
+  además te añade a ella; si es un repo público, no necesitas ningún rol: basta con un fork.
 - Una clave SSH en tu perfil de GitHub (GitHub → Settings → SSH and GPG keys). Si no tienes:
   `ssh-keygen -t ed25519` y pega el contenido de `~/.ssh/id_ed25519.pub`. Con esa clave entrarás en
   tus VMs.
@@ -22,7 +23,7 @@ aprueba.
   warp-cli connect                   # o desde el icono, en Windows y macOS
   ```
   El admin te dice el `<TEAM>` y te da de alta. Con WARP conectado llegas al SSH de tus VMs, y a
-  nada más del homelab.
+  nada más de la infraestructura.
 
 **Cómo sabrás que ha salido bien:** `make ssh NAME=<tu-vm>` te deja dentro de la VM con tu usuario.
 
@@ -31,8 +32,8 @@ aprueba.
 Tienes permiso de **lectura** sobre el repo: los cambios se proponen desde tu fork.
 
 ```sh
-gh repo fork <ORG>/homelab-iac --clone --remote   # origin = tu fork, upstream = el repo central
-cd homelab-iac
+gh repo fork <ORG>/pve-platform-iac --clone --remote   # origin = tu fork, upstream = el repo central
+cd pve-platform-iac
 make setup && make doctor
 ```
 
@@ -61,7 +62,7 @@ el nombre. Asigna solo un VMID y una IP libres **del rango de tu proyecto**, y e
 git switch -c pide-<nombre>
 git add requests/vms/<nombre>.yaml && git commit -m "Pide <nombre>"
 git push -u origin pide-<nombre>
-gh pr create --repo <ORG>/homelab-iac --fill
+gh pr create --repo <ORG>/pve-platform-iac --fill
 ```
 
 En el PR verás:
@@ -98,7 +99,7 @@ Para un MVP de dataspace: `make tunnel NAME=<nombre>` ([dataspace.md](dataspace.
 git switch main && git pull upstream main
 make remove NAME=<nombre>
 git switch -c quita-<nombre> && git commit -am "Quita <nombre>" && git push -u origin quita-<nombre>
-gh pr create --repo <ORG>/homelab-iac --fill
+gh pr create --repo <ORG>/pve-platform-iac --fill
 ```
 
 En el plan del PR tienen que salir **solo** tus VMs como destruidas.

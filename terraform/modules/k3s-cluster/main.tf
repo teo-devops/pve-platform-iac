@@ -31,7 +31,7 @@ locals {
 
 # El round-robin sobre idx reparte master y workers de un mismo cluster entre los
 # nodos disponibles, para no perderlo entero si cae uno (con un solo nodo, todos
-# caen en el mismo: es lo esperado en un homelab pequeño).
+# caen en el mismo: es lo esperado en un cluster pequeño).
 module "vm" {
   source = "../vm"
 

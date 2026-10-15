@@ -1,8 +1,8 @@
 # pr-validate.yml — validaciones SIN credenciales de cada PR (y de main).
 #
-# Corre en runners HOSPEDADOS por GitHub (ubuntu-latest), nunca en los del homelab:
+# Corre en runners HOSPEDADOS por GitHub (ubuntu-latest), nunca en los de la infraestructura:
 # aqui se ejecuta el codigo del PR tal cual, y un PR puede venir de cualquier
-# colaborador. Sin secretos, sin red al homelab: lo peor que puede hacer un PR
+# colaborador. Sin secretos, sin red a la infraestructura: lo peor que puede hacer un PR
 # malicioso es fallar su propio check (docs/seguridad.md, R-01).
 #
 # Estos jobs son los "checks obligatorios" del ruleset de main (docs/bootstrap.md §4).
