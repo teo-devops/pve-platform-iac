@@ -5,7 +5,7 @@
 # hashicorp/setup-terraform en la version fijada en el workflow.
 #
 # Construir en el host de runners:  docker build -t homelab-runner:local runner/
-FROM ghcr.io/actions/actions-runner:2.337.0
+FROM ghcr.io/actions/actions-runner:2.338.0
 
 USER root
 # python3-yaml: scripts/iac · ansible: configure · gnupg: plan cifrado · jq, unzip:
