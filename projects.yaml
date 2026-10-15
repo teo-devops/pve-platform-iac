@@ -18,11 +18,11 @@
 
 admins:
   teo-devops:
-    ssh_key: TODO-ssh-ed25519 AAAA... (contenido de ~/.ssh/id_ed25519.pub)
+    ssh_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAv09D1oyYwrseIai038HzGYC1q6zUtIix21Ql8HMOJj mgil@i2cat-9S715P214054ZRA000014
 
 service:
   ci:
-    ssh_key: TODO-ssh-ed25519 AAAA... (publica de ANSIBLE_SSH_KEY)
+    ssh_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDHA2VfkoOp6v0zATB6mTO2a1hwLkt2CRsevDG16lcDM homelab-iac-ci
 
 projects:
   # Dataspaces propios (teo-devops/dataspace-mvp). Ejemplo: cambia o quita lo que no aplique.

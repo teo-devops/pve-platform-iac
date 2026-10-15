@@ -67,6 +67,35 @@ Puesta en marcha desde cero: [bootstrap.md](bootstrap.md).
    tiene cuenta personal en todas).
 3. Acceso al host de runners y a las credenciales de break-glass.
 
+## Cambio de PC de un admin
+
+Un admin tiene **dos** claves distintas en las VMs, y hay que cambiar las dos:
+
+| Dónde vive | Para qué | Se cambia en |
+|---|---|---|
+| `projects.yaml` → `admins.<usuario>.ssh_key` | cuenta `ops` de todas las VMs | PR al repo |
+| `https://github.com/<usuario>.keys` | su cuenta personal en las VMs | Settings → SSH keys de GitHub |
+
+El pipeline entra con la clave del CI (`service.ci`, secreto `ANSIBLE_SSH_KEY`), **no** con la de
+ningún admin. Por eso el cambio se aplica igual aunque el PC viejo ya no exista o se haya perdido:
+
+```sh
+# En el PC nuevo
+ssh-keygen -t ed25519 -C "<usuario>@<pc-nuevo>"
+gh ssh-key add ~/.ssh/id_ed25519.pub --title "<pc-nuevo>"   # pide el scope admin:public_key
+# PR: projects.yaml -> admins.<usuario>.ssh_key = contenido de ~/.ssh/id_ed25519.pub ; merge
+```
+
+El `configure` de ese deploy sustituye la lista completa de claves de `ops` (la vieja queda
+revocada) y vuelve a leer tus claves de GitHub. Las VMs que ya existían no se recrean: cloud-init
+solo se usa en el primer arranque, y Terraform ignora ese cambio (`ignore_changes` en
+`terraform/modules/vm/main.tf`). Comprueba que entras con `make ssh NAME=<vm>`. Al final, borra en
+GitHub la clave del PC viejo; si lo has **perdido**, hazlo lo primero
+([runbooks/token-comprometido.md](runbooks/token-comprometido.md)).
+
+Una sola clave por admin en `projects.yaml` es deliberado. Mientras haces el cambio, puedes seguir
+entrando con la cuenta personal si ya has añadido la clave nueva en GitHub.
+
 ## Subir la imagen base
 
 ```sh

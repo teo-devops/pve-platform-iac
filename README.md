@@ -58,19 +58,17 @@ docs/                documentacion por rol y runbooks
 
 ## Estado
 
-Al **14-oct-2026**:
+Al **15-oct-2026**:
 
-- **Hecho y comprobado en local:** `terraform fmt` sin avisos y `terraform validate` correcto con
-  claves SSH reales en `projects.yaml` (provider `bpg/proxmox` 0.111.1). Mientras las `ssh_key` de
-  `projects.yaml` sigan en `TODO`, `validate` falla **a propósito** (`precondition` de
-  `terraform/requests.tf`), y con él `make lint` y el job `pr-validate`: es lo primero que hay que
-  rellenar. `iac check` con peticiones de ejemplo (VM con MVP y cluster), rechazo de `mvp.ref` con una
+- **Hecho y comprobado en local:** `terraform fmt` y `terraform validate` sin avisos (provider
+  `bpg/proxmox` 0.111.1; `validate` exige claves SSH reales en `projects.yaml`, rellenas desde el
+  15-oct-2026), `iac check` con peticiones de ejemplo (VM con MVP y cluster), rechazo de `mvp.ref` con una
   rama, cifrado y descifrado del plan, comprobación de claves de host fijadas, `image-pin` con la
   firma GPG de Ubuntu verificada (release `20260926`), enlaces de la documentación y tabla del
   catálogo.
 - **Pendiente de la puesta en marcha** ([bootstrap.md](docs/bootstrap.md)): crear la organización de
   GitHub (`teo-devops` es una cuenta personal), HCP, runners, ACL de Proxmox y CA; rellenar los `TODO`
-  de `homelab.yaml` y `projects.yaml`.
+  de `homelab.yaml`; subir la clave SSH del admin a su perfil de GitHub (cuenta personal en las VMs).
 - **Sin probar todavía contra un Proxmox real:** el plan y el apply, los permisos exactos del rol
   `IaCApply`, la importación por `import_from`, los workflows en GitHub y el despliegue del MVP con
   este rol. La verificación prevista está en [docs/bootstrap.md §9](docs/bootstrap.md#9-primer-deploy).
