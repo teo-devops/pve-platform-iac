@@ -195,9 +195,12 @@ gh api -X POST repos/<ORG>/pve-platform-iac/rulesets --input - <<'JSON'
 JSON
 ```
 
-Con un solo admin, `require_last_push_approval` impide que apruebe su propio último push: sus PR
-los aprueba otro admin. Si de momento solo hay uno, quítalo y apúntalo en el registro de
-break-glass ([operador.md](operador.md#registro-de-break-glass)).
+**Con un solo admin**, GitHub no deja aprobar el PR propio: el ruleset de arriba bloquearía todos sus
+PR. Mientras sea así, usa `"required_approving_review_count": 0`, `"require_code_owner_review":
+false` y `"require_last_push_approval": false`. El PR y los checks siguen siendo obligatorios, y
+nadie puede empujar a `main` ni saltarse el ruleset. Apúntalo en el registro de break-glass
+([operador.md](operador.md#registro-de-break-glass)) y súbelo a 1 aprobación de CODEOWNERS en cuanto
+haya un segundo admin.
 
 ## 5. Environments y secretos
 

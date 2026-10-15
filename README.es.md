@@ -78,6 +78,11 @@ Al **15-oct-2026**:
   rama, cifrado y descifrado del plan, comprobación de claves de host fijadas, `image-pin` con la
   firma GPG de Ubuntu verificada (release `20260926`), enlaces de la documentación y tabla del
   catálogo.
+- **Publicado** el 15-oct-2026 como `teo-devops/pve-platform-iac` (público, plantilla), con el
+  ruleset de `main` en modo un solo admin (PR y checks obligatorios, sin aprobación;
+  [bootstrap.md §4](docs/bootstrap.md#4-ruleset-de-main)), los environments `production` y `plan`
+  limitados a `main`, secret scanning con push protection, private vulnerability reporting, el
+  `GITHUB_TOKEN` en solo lectura y la aprobación obligatoria de los workflows de personas de fuera.
 - **Pendiente de la puesta en marcha de la instancia de referencia** (`teo-devops`, modelo B de
   [D-01](docs/diseno.md#decisiones)): instalar el cluster, HCP, runners, ACL de Proxmox y CA;
   rellenar los `TODO` de `platform.yaml`; subir la clave SSH del admin a su perfil de GitHub.
