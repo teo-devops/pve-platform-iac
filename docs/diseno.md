@@ -189,6 +189,30 @@ grupo `docker` en las VMs que lo tienen.
 Docker, y el grupo `docker` ya equivale a root. Restringirlo daría una falsa sensación de seguridad.
 Lo que sí está aislado es **qué VMs** son suyas (D-10). Ver [A-3](seguridad.md#riesgos-aceptados).
 
+### D-13 · VPN de los devs con Cloudflare Zero Trust (túnel + WARP) — 15-oct-2026
+
+**Decisión:** los devs llegan a la red de las VMs con el cliente WARP, autenticados con su cuenta de
+GitHub. El tráfico entra al homelab por un túnel `cloudflared` saliente, desde un LXC dedicado, y las
+políticas de Gateway lo limitan al `:22` de la red de las VMs. Cómo se monta:
+[bootstrap.md §10](bootstrap.md#10-acceso-de-los-devs-a-las-vms-vpn).
+**Por qué:**
+- No se abre ningún puerto del router ni hace falta una IP pública.
+- La identidad es la misma cuenta de GitHub de `projects.yaml`.
+- Cada acceso se revoca por persona y por dispositivo, y queda un registro de conexiones.
+- El plan Free cubre hasta 50 usuarios.
+- Es el mismo modelo que ya usamos para el cluster retech.
+
+**Alternativas:**
+- *Tailscale*: igual de sencillo, pero las ACL de grupo son de pago a partir de cierto tamaño y
+  añade otra cuenta más.
+- *WireGuard propio*: exige abrir un puerto en el router, y la gestión de claves por persona es
+  manual.
+- *Bastión SSH expuesto*: Internet llega a un SSH del homelab.
+
+**Coste:** Cloudflare ve los metadatos (quién se conecta, a qué IP y puerto y cuándo), pero no el
+contenido, porque SSH va cifrado de extremo a extremo. Si Cloudflare cae, no se puede entrar a las
+VMs, aunque las VMs y el pipeline siguen funcionando: los runners no usan el túnel.
+
 ## Qué viene de proxmox-iac y qué cambia
 
 Este repo deriva de `proxmox-iac`, el repo del cluster retech de i2cat, que sigue igual. Se reutiliza

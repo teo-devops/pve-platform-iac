@@ -10,6 +10,9 @@ Cambios con impacto para quien usa u opera la plataforma. Formato: fecha, qué y
   capacidad y exposición).
 - §1: transferir el repo si ya existe en una cuenta personal. §10: VPN para que los devs lleguen a
   las VMs.
+- VPN de los devs con Cloudflare Zero Trust: túnel `cloudflared` y cliente WARP con login de GitHub
+  (D-13, [docs/bootstrap.md §10](docs/bootstrap.md#10-acceso-de-los-devs-a-las-vms-vpn)), y sus
+  credenciales en [docs/credenciales.md](docs/credenciales.md#túnel-de-cloudflare).
 - [docs/seguridad.md](docs/seguridad.md): riesgo aceptado A-9 (red plana entre proyectos).
 - `homelab.yaml`: `image_datastore` necesita el contenido `import` (antes decía «iso», por error).
 - Claves SSH del admin y del CI en `projects.yaml`; cómo cambia de PC un admin en

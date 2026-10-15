@@ -20,6 +20,8 @@ Piden por PR, y el pipeline aplica con secretos que solo ven los jobs de `main`.
 | `TF_CLOUD_ORGANIZATION` | variable del repo | todos | Nombre de la organización de HCP (no es secreto) |
 | `GHCR_USER` | variable del repo | configure | Usuario dueño de `GHCR_READ_TOKEN` (no es secreto) |
 | PAT de runners | `/etc/homelab-runner/env` en el host de runners | `runner/supervisor.sh` | Fine-grained, organización, solo «Self-hosted runners: read and write» |
+| Token del túnel de Cloudflare | servicio `cloudflared` en el LXC del conector | `cloudflared` | Permite levantar un conector de **ese** túnel ([abajo](#túnel-de-cloudflare)) |
+| Secret de la OAuth App de GitHub | Zero Trust → Login methods | Cloudflare | Login de las personas en WARP; no da acceso a GitHub |
 
 Los environments `production` y `plan` solo despliegan desde `main` ([bootstrap.md §5](bootstrap.md#5-environments-y-secretos)),
 así que ningún job de una rama o de un fork recibe estos secretos.
@@ -119,6 +121,22 @@ la organización como propietario del recurso y solo el permiso «Self-hosted ru
 write». Vive en `/etc/homelab-runner/env` (root, `0600`). En el host de runners solo entran los
 admins. Caduca: pon una fecha y un recordatorio. **Rotar:** crea uno nuevo, cámbialo en el fichero y
 `systemctl restart 'homelab-runner@*'`.
+
+## Túnel de Cloudflare
+
+Hay dos credenciales:
+
+- **Token del túnel.** Con él, cualquiera puede levantar un conector del túnel `homelab`, que
+  recibiría el tráfico de los devs hacia sus rutas. `cloudflared service install` lo guarda en la
+  unidad systemd del LXC del conector, y en ese LXC solo entran los admins. **Rotar:** en Networks →
+  Tunnels → `homelab`, crea un túnel nuevo (`homelab-2`), instala su conector, mueve las rutas,
+  comprueba que llegas y borra el viejo.
+- **Secret de la OAuth App de GitHub.** Vive en Zero Trust → Settings → Authentication. Solo sirve
+  para el login de las personas. **Rotar:** genera uno nuevo en la OAuth App, pégalo en Cloudflare,
+  pulsa Test y borra el viejo en GitHub.
+
+Para quitarle el acceso a **una persona**, mira
+[operador.md](operador.md#alta-y-baja-de-una-persona).
 
 ## Lo que NO es una credencial
 

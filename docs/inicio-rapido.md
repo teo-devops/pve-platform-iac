@@ -13,7 +13,16 @@ aprueba.
   tus VMs.
 - `git`, `python3` con PyYAML (`sudo apt install python3-yaml`), `ssh` y, muy recomendable, la CLI
   de GitHub [`gh`](https://cli.github.com) autenticada (`gh auth login`).
-- Acceso de red al homelab (VPN) para entrar en las VMs. Para pedirlas no hace falta.
+- El cliente **Cloudflare WARP** para entrar en las VMs (para pedirlas no hace falta). Instálalo
+  desde <https://one.one.one.one>; en Ubuntu/Debian, el paquete `cloudflare-warp` de
+  `pkg.cloudflare.com`. Después:
+
+  ```sh
+  warp-cli registration new <TEAM>   # abre el navegador: entra con tu cuenta de GitHub
+  warp-cli connect                   # o desde el icono, en Windows y macOS
+  ```
+  El admin te dice el `<TEAM>` y te da de alta. Con WARP conectado llegas al SSH de tus VMs, y a
+  nada más del homelab.
 
 **Cómo sabrás que ha salido bien:** `make ssh NAME=<tu-vm>` te deja dentro de la VM con tu usuario.
 

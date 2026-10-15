@@ -48,6 +48,8 @@ Puesta en marcha desde cero: [bootstrap.md](bootstrap.md).
   ```sh
   gh api -X PUT orgs/<ORG>/teams/colaboradores/memberships/<usuario> -f role=member
   ```
+  Añade su email a las listas de Cloudflare: inscripción de dispositivos y política `devs-ssh-vms`,
+  o la de su proyecto ([bootstrap.md §10](bootstrap.md#10-acceso-de-los-devs-a-las-vms-vpn)).
 - **Baja:** quítalo de `members` (PR y merge). En el `configure` de ese deploy, el rol `base` borra
   su cuenta en todas las VMs (su `home` se queda, por si hay algo que recuperar). Después,
   sácalo de la organización:
@@ -57,6 +59,9 @@ Puesta en marcha desde cero: [bootstrap.md](bootstrap.md).
   ```
   Si se va con conflicto, haz la baja de GitHub **primero** (pierde el acceso al repo al instante),
   y lanza el deploy a mano para que pierda el SSH.
+  En Cloudflare Zero Trust, quita su email de las listas y revoca sus dispositivos y sesiones (My
+  Team → Users → el usuario → Revoke). Así pierde también la red, aunque el deploy aún no haya
+  borrado su cuenta.
 - **Rotar su clave:** la cambia él en GitHub, y se aplica en el siguiente `configure` (o lanza deploy
   a mano).
 
