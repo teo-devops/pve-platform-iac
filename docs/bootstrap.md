@@ -5,8 +5,8 @@ repo** (organización, ruleset, environments, HCP, runners, ACL de Proxmox y CA)
 
 **Antes de empezar necesitas:** acceso root a un nodo de Proxmox VE 8.4 o posterior (probado con
 9.x), ser owner de la organización de GitHub (o poder crearla), una cuenta en HCP Terraform y un host
-pequeño en el homelab para los runners (LXC o VM con Docker: 2 vCPU y 4 GB bastan), y una cuenta de
-Cloudflare para la VPN de los devs (§10). En tu máquina:
+pequeño en el homelab para los runners (LXC o VM con Docker: 2 vCPU y 4 GB bastan), una cuenta de
+Cloudflare para la VPN de los devs (§10) y un bucket en tu SeaweedFS para las copias (§11). En tu máquina:
 `gh` autenticado con permisos de admin (`gh auth refresh -s admin:org`), `terraform`, `python3` con
 PyYAML, `jq` y `curl`.
 
@@ -14,7 +14,8 @@ PyYAML, `jq` y `curl`.
 
 En los comandos, sustituye `<ORG>` por la organización de GitHub y `<HCP_ORG>` por la de HCP.
 
-Orden: §0 (Proxmox) → §1–§9 (repo, GitHub, HCP, tokens, primer deploy) → §10 (acceso de los devs).
+Orden: §0 (Proxmox) → §1–§9 (repo, GitHub, HCP, tokens, primer deploy) → §10 (acceso de los devs)
+→ §11 (copias de seguridad).
 
 ## 0. Proxmox: lo que tiene que estar antes
 
@@ -113,11 +114,10 @@ fuera de banda** a mano: un error en la red te deja sin acceso al nodo.
    bloqueado el realm entero (`missing required 2nd keys` en `journalctl -u pvedaemon`). Para
    deshacerlo: `pveum realm modify pve --delete tfa`.
    En la pantalla de login, el usuario va **sin** `@pve` y el realm se elige en el desplegable.
-9. **Copias de seguridad.** Terraform puede recrear una VM, pero no sus datos. Programa un trabajo
-   de `vzdump` (Datacenter → Backup) hacia **otro disco u otra máquina** (NAS o Proxmox Backup
-   Server): sin almacenamiento compartido ni replicación, si cae un disco se pierden sus VMs.
-   Una VM restaurada conserva sus claves de host. Si no las conserva:
-   [runbooks/clave-de-host-cambiada.md](runbooks/clave-de-host-cambiada.md).
+9. **Copias de seguridad.** Terraform puede recrear una VM, pero no sus datos. Sin almacenamiento
+   compartido ni replicación, si cae un disco se pierden sus VMs. Las copias van a **Proxmox
+   Backup Server con un datastore en S3 (SeaweedFS)**: se montan en el §11, cuando ya existan las
+   primeras VMs.
 10. **Capacidad.** Reserva en cada nodo unos 2 hilos y la RAM del sistema y del ARC, y deja libre
     entre un 15 % y un 20 % del pool ZFS: por encima del 80–85 % de ocupación, ZFS va mucho más
     lento. La RAM es lo que limita cuántas VMs caben, no la CPU. Antes de pedir un `ds-mvp-kind`
@@ -452,3 +452,131 @@ En los comandos, `<TEAM>` es el nombre de tu organización de Zero Trust, `<VMS>
   https://<nodo>:8006` no llega.
 - Con un admin: llega a `:8006`.
 - En Zero Trust → Logs → Gateway → Network se ven el *allow* y el *block*.
+
+## 11. Copias de seguridad: Proxmox Backup Server sobre SeaweedFS (S3)
+
+Proxmox VE no escribe copias directamente en S3. Quien lo hace es **Proxmox Backup Server (PBS) 4**,
+con un datastore cuyo *backend* es un bucket S3 ([D-14](diseno.md#decisiones)):
+
+```
+nodos PVE ──vzdump──► PBS (VM, caché local 64–128 GiB) ──HTTPS S3──► SeaweedFS (bucket pbs-homelab)
+             incremental, cifrado en el nodo         deduplicado              otra máquina
+```
+
+- PBS deduplica por bloques: tras la primera copia, cada copia diaria solo sube lo que ha cambiado.
+- La copia se **cifra en el nodo** de Proxmox antes de salir. Ni PBS ni SeaweedFS ven los datos en
+  claro.
+
+**Antes de empezar:**
+- **SeaweedFS en otro hardware**, no en este Proxmox: si cae el host, una copia que vive en él cae
+  con él.
+- El **S3 de SeaweedFS con HTTPS**: PBS rechaza HTTP. Vale un certificado autofirmado, porque PBS
+  admite fijar su huella.
+- Una **VM para PBS**: 2 vCPU, 4 GB, 32 GB de sistema y **un segundo disco de 64–128 GiB para la
+  caché**. La caché es obligatoria, aunque los datos vivan en S3. Créala a mano, **fuera de los
+  pools del repo**, igual que el LXC de Cloudflare.
+
+En los comandos: `<S3>` es el host del S3 de SeaweedFS, `<PBS>` la IP de la VM de PBS y
+`pbs-homelab` el bucket.
+
+1. **Bucket y credencial en SeaweedFS.** Crea un bucket solo para esto y una identidad limitada a
+   él:
+
+   ```sh
+   echo 's3.bucket.create -name pbs-homelab' | weed shell
+   ```
+   En el `s3.json` de identidades (el que pasas con `weed s3 -config`), añade una entrada y
+   reinicia el S3:
+
+   ```json
+   {"name": "pbs-homelab",
+    "credentials": [{"accessKey": "<AK>", "secretKey": "<SK>"}],
+    "actions": ["Read:pbs-homelab", "Write:pbs-homelab", "List:pbs-homelab"]}
+   ```
+   PBS necesita leer, escribir, listar y **borrar** objetos (su recolector de basura borra los
+   bloques que ya no usa ninguna copia). Pruébalo antes de seguir:
+
+   ```sh
+   export AWS_ACCESS_KEY_ID=<AK> AWS_SECRET_ACCESS_KEY=<SK>
+   S3="aws --endpoint-url https://<S3>:8333 s3"     # añade --no-verify-ssl si el certificado es autofirmado
+   echo hola > t && $S3 cp t s3://pbs-homelab/t && $S3 ls s3://pbs-homelab/ && $S3 rm s3://pbs-homelab/t
+   ```
+   **No pongas** en el bucket reglas de expiración ni de ciclo de vida: borrarían bloques que siguen
+   en uso y romperían las copias. Si el certificado es autofirmado, saca su huella:
+   `openssl s_client -connect <S3>:8333 </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256`.
+2. **Instala PBS 4** en la VM (ISO de proxmox.com) y prepara la caché en el segundo disco:
+
+   ```sh
+   mkfs.ext4 /dev/sdb && mkdir -p /mnt/pbs-cache
+   echo '/dev/sdb /mnt/pbs-cache ext4 defaults 0 2' >> /etc/fstab && mount -a
+   ```
+3. **Endpoint S3 y datastore** (en PBS). Se puede hacer desde la GUI (Configuration → Remotes → S3
+   Endpoints → Add, marcando *Path Style*) o por CLI:
+
+   ```sh
+   proxmox-backup-manager s3 endpoint create seaweedfs \
+     --endpoint '<S3>' --port 8333 --region us-east-1 --path-style true \
+     --access-key '<AK>' --secret-key '<SK>' \
+     --fingerprint '<huella sha256, solo si es autofirmado>'
+   proxmox-backup-manager datastore create homelab /mnt/pbs-cache/homelab \
+     --backend type=s3,client=seaweedfs,bucket=pbs-homelab
+   ```
+   SeaweedFS usa direcciones *path-style* (`https://<S3>/<bucket>/…`), de ahí `--path-style true`.
+   Si algún flag no coincide en tu versión de PBS, usa la GUI.
+4. **Retención, limpieza y verificación** (en PBS, Datastore → `homelab`):
+
+   ```sh
+   proxmox-backup-manager prune-job create homelab-retencion --store homelab --schedule daily \
+     --keep-daily 7 --keep-weekly 4 --keep-monthly 6
+   proxmox-backup-manager datastore update homelab --gc-schedule daily
+   proxmox-backup-manager verify-job create homelab-verificar --store homelab --schedule weekly \
+     --ignore-verified true --outdated-after 30
+   ```
+   Verificar implica descargar los bloques desde SeaweedFS: con `--outdated-after 30`, cada bloque
+   se comprueba como mucho una vez al mes.
+5. **Usuario de PBS para Proxmox VE**, con permiso de hacer copias y nada más:
+
+   ```sh
+   proxmox-backup-manager user create pve@pbs
+   proxmox-backup-manager user generate-token pve@pbs backup         # el secreto sale UNA vez
+   proxmox-backup-manager acl update /datastore/homelab DatastoreBackup --auth-id 'pve@pbs!backup'
+   proxmox-backup-manager cert info | grep -i fingerprint             # huella de PBS, para el paso 6
+   ```
+6. **Añade PBS como storage en Proxmox VE** (en un nodo; con cluster, se replica solo), con
+   **cifrado en el cliente**:
+
+   ```sh
+   pvesm add pbs pbs-homelab --server <PBS> --datastore homelab \
+     --username 'pve@pbs!backup' --password '<secreto del token>' \
+     --fingerprint '<huella de PBS>' --encryption-key autogen
+   ```
+   > [!IMPORTANT]
+   > `autogen` crea la clave en `/etc/pve/priv/storage/pbs-homelab.enc`. **Sin esa clave no se puede
+   > restaurar ninguna copia**, y si cae el host, cae con él. Guarda su contenido **fuera del
+   > homelab** (gestor de contraseñas) ahora mismo
+   > ([credenciales.md](credenciales.md#copias-de-seguridad)).
+7. **Trabajo de copia** (Datacenter → Backup → Add, o por CLI): cada noche, todas las VMs y LXC
+   menos la de PBS (no tiene sentido copiar PBS dentro de sí mismo).
+
+   ```sh
+   pvesh create /cluster/backup --id homelab-diario --schedule '02:30' --storage pbs-homelab \
+     --all 1 --exclude <vmid-de-PBS> --mode snapshot --notes-template '{{guestname}}'
+   ```
+   A las 02:30 no suele haber deploys. Si coincide uno, Terraform puede encontrarse la VM bloqueada
+   por la copia ([runbooks/apply-fallido.md](runbooks/apply-fallido.md): `VM is locked`).
+8. **Configuración de los nodos** (opcional, recomendable). `/etc/pve` (ACL, storages, usuarios,
+   la clave de cifrado) no entra en las copias de VMs. Puedes copiarlo con `proxmox-backup-client`
+   desde un timer de systemd en cada nodo:
+
+   ```sh
+   PBS_REPOSITORY='pve@pbs!backup@<PBS>:homelab' PBS_PASSWORD='<secreto>' PBS_FINGERPRINT='<huella>' \
+     proxmox-backup-client backup pve-etc.pxar:/etc/pve --keyfile /etc/pve/priv/storage/pbs-homelab.enc
+   ```
+
+**Comprobación:**
+- Lanza el trabajo a mano (Datacenter → Backup → `homelab-diario` → Run now). Tiene que terminar
+  en `OK`, y en SeaweedFS tienen que aparecer objetos con el prefijo `homelab/`
+  (`$S3 ls s3://pbs-homelab/ --recursive | head`).
+- Después, **restaura una VM de prueba**, como en
+  [runbooks/restaurar-vm.md](runbooks/restaurar-vm.md#prueba-mensual). Una copia que no se ha
+  restaurado nunca no está probada.
