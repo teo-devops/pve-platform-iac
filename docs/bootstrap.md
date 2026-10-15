@@ -13,6 +13,128 @@ PyYAML, `jq` y `curl`.
 
 En los comandos, sustituye `<ORG>` por la organización de GitHub y `<HCP_ORG>` por la de HCP.
 
+Orden: §0 (Proxmox) → §1–§9 (repo, GitHub, HCP, tokens, primer deploy) → §10 (acceso de los devs).
+
+## 0. Proxmox: lo que tiene que estar antes
+
+El repo no instala ni configura Proxmox: da por hecho un host o cluster sano. Esto se hace **una vez
+por nodo**, como root en la consola o por SSH, y siempre **con acceso a la consola física o
+fuera de banda** a mano: un error en la red te deja sin acceso al nodo.
+
+1. **Instalación (PVE 9.x).** Decide aquí dos cosas que después cuesta cambiar:
+   - **Disco:** con ZFS (`ashift=12`, `compression=lz4`), el datastore de las VMs se llama
+     `local-zfs`; con ext4/xfs, `local-lvm`. Es el valor de `datastore` en `homelab.yaml`. ZFS
+     `RAID0` con un solo disco **no tiene redundancia**: si muere el disco, se pierden sus VMs (ver
+     el paso 9).
+   - **Nombre (FQDN) e IP estática definitivos.** El certificado del nodo (`pve-ssl.pem`) incluye
+     ambos y es lo que valida el provider (§3). Si cambian después: `pvecm updatecerts --force` y
+     repite §3.
+2. **Repositorios sin suscripción.** PVE 9 (Debian 13 «trixie») usa ficheros deb822 `.sources`;
+   los repos enterprise sin suscripción hacen fallar `apt update` con un 401:
+
+   ```sh
+   cd /etc/apt/sources.list.d
+   for f in pve-enterprise.sources ceph.sources; do
+     [ -f "$f" ] && ! grep -qi '^Enabled: *false' "$f" && printf 'Enabled: false\n' >> "$f"
+   done
+   cat > pve-no-subscription.sources <<'EOF'
+   Types: deb
+   URIs: http://download.proxmox.com/debian/pve
+   Suites: trixie
+   Components: pve-no-subscription
+   Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+   EOF
+   apt update && apt full-upgrade -y
+   ```
+   `Enabled: false` va **sin** línea en blanco delante: en deb822 una línea en blanco separa
+   entradas, y apt lo leería como una entrada vacía y daría error. Con PVE 8 el nombre es
+   `bookworm` y los ficheros son `.list`.
+3. **Memoria de ZFS (solo con ZFS).** El caché ARC compite con las VMs por la RAM.
+   `cat /sys/module/zfs/parameters/zfs_arc_max`: si sale `0` (sin límite), fíjalo (aquí, 6 GiB) y
+   reinicia:
+
+   ```sh
+   echo "options zfs zfs_arc_max=$((6*1024**3))" > /etc/modprobe.d/zfs.conf && update-initramfs -u
+   ```
+4. **Red.** El instalador crea `vmbr0` sobre la NIC. Si `homelab.yaml` lleva `vlan_tag`, el bridge
+   tiene que admitir VLAN. Edita `/etc/network/interfaces` y aplícalo con `ifreload -a`, guardando
+   antes una copia:
+
+   ```
+   iface vmbr0 inet static
+       ...
+       bridge-vlan-aware yes
+       bridge-vids 2-4094
+   ```
+   Si el NIC es uno solo, por él pasan la gestión, las VMs y corosync: es suficiente en un homelab,
+   pero no lo satures con copias de seguridad en horario de trabajo.
+5. **DNS.** Comprueba que el servidor que vas a poner en `network.dns` responde de verdad. Muchos
+   routers dan la puerta de enlace, pero no sirven DNS:
+
+   ```sh
+   dig +short @<dns> github.com     # tiene que devolver IPs
+   ```
+   Haz lo mismo con el `/etc/resolv.conf` de cada nodo: sin DNS, el nodo no puede descargar la
+   imagen base.
+6. **Almacenamiento de la imagen base.** El datastore `image_datastore` tiene que admitir el
+   contenido `import`, que no viene activado por defecto. **Añádelo a los que ya tenga**, sin
+   quitar ninguno:
+
+   ```sh
+   pvesm status --content import                     # si 'local' no sale, falta
+   grep -A3 '^dir: local$' /etc/pve/storage.cfg      # mira su línea 'content'
+   pvesm set local --content iso,vztmpl,backup,import   # la lista que tenía + import
+   ```
+   Las VMs se reparten entre los nodos por `vmid % número de nodos`. Por eso `datastore` e
+   `image_datastore` tienen que existir **con el mismo nombre en todos los nodos**.
+7. **Cluster (solo con más de un nodo).**
+
+   ```sh
+   pvecm create <nombre>                    # en el primero; máximo 15 caracteres (límite de corosync)
+   pvecm add <ip-del-primero> --use_ssh     # en cada uno de los demás (o --fingerprint <sha256>)
+   pvecm status                             # "Quorate: Yes" y todos los votos
+   ```
+   - **Con dos nodos**, si uno cae, el otro pierde el quórum y deja de aceptar cambios. Añade un
+     QDevice en una tercera máquina (`pvecm qdevice setup <ip>`) o asume esa limitación.
+   - `/etc/pve` se replica entre los nodos. Las ACL, `storage.cfg` y los usuarios se cambian **una
+     sola vez**, en cualquier nodo.
+   - Todos los nodos comparten la CA del cluster: la de §3 vale para todos.
+8. **Tu cuenta de admin en Proxmox.** No uses `root@pam` en el día a día: déjalo para la consola y
+   las emergencias.
+
+   ```sh
+   pveum user add <tu-usuario>@pve && pveum passwd <tu-usuario>@pve
+   pveum acl modify / -user <tu-usuario>@pve -role Administrator
+   ```
+   Activa el segundo factor **por usuario**, cada uno desde su cuenta (Datacenter → Permissions →
+   Two Factor → Add → TOTP). **No** lo actives en el realm (`pveum realm modify pve --tfa …`). Es el
+   mecanismo antiguo: exige que el admin cargue antes la clave de cada usuario, y si falta, deja
+   bloqueado el realm entero (`missing required 2nd keys` en `journalctl -u pvedaemon`). Para
+   deshacerlo: `pveum realm modify pve --delete tfa`.
+   En la pantalla de login, el usuario va **sin** `@pve` y el realm se elige en el desplegable.
+9. **Copias de seguridad.** Terraform puede recrear una VM, pero no sus datos. Programa un trabajo
+   de `vzdump` (Datacenter → Backup) hacia **otro disco u otra máquina** (NAS o Proxmox Backup
+   Server): sin almacenamiento compartido ni replicación, si cae un disco se pierden sus VMs.
+   Una VM restaurada conserva sus claves de host. Si no las conserva:
+   [runbooks/clave-de-host-cambiada.md](runbooks/clave-de-host-cambiada.md).
+10. **Capacidad.** Reserva en cada nodo unos 2 hilos y la RAM del sistema y del ARC, y deja libre
+    entre un 15 % y un 20 % del pool ZFS: por encima del 80–85 % de ocupación, ZFS va mucho más
+    lento. La RAM es lo que limita cuántas VMs caben, no la CPU. Antes de pedir un `ds-mvp-kind`
+    (16 GB), comprueba que cabe en el nodo que le toca (`free -g`): el reparto es por `vmid`, no por
+    espacio libre.
+11. **Exposición.** Ni `:8006` ni el SSH de los nodos se abren a Internet. Para administrar desde
+    fuera, usa la VPN (§10).
+
+**Comprobación:**
+
+```sh
+pveversion                                  # 9.x
+apt update                                  # sin 401
+pvecm status                                # Quorate: Yes (con cluster)
+pvesm status --content images,import        # datastore e image_datastore, activos
+zpool status                                # ONLINE (con ZFS)
+```
+
 ## 1. Organización de GitHub
 
 1. Crea la organización (Settings de tu cuenta → Organizations → New organization) con el plan
@@ -35,6 +157,10 @@ En los comandos, sustituye `<ORG>` por la organización de GitHub y `<HCP_ORG>` 
 
    ```sh
    gh repo create <ORG>/homelab-iac --private --source . --push
+   # Si el repo ya existe en una cuenta personal (p. ej. teo-devops/homelab-iac), en vez de crearlo,
+   # transfiérelo (conserva historial, PR e issues; GitHub redirige la URL vieja):
+   #   gh api -X POST repos/teo-devops/homelab-iac/transfer -f new_owner=<ORG>
+   #   git remote set-url origin https://github.com/<ORG>/homelab-iac.git
    gh api -X PUT orgs/<ORG>/teams/infra-admins/repos/<ORG>/homelab-iac -f permission=admin
    gh api -X PUT orgs/<ORG>/teams/colaboradores/repos/<ORG>/homelab-iac -f permission=pull   # Read
    ```
@@ -233,3 +359,26 @@ y anótalo en el CHANGELOG.
 4. `make ssh NAME=<vm>` desde tu máquina.
 5. Lanza `drift` a mano (Actions → drift → Run workflow): tiene que decir «Sin deriva».
 6. Anota la fecha en el README (sección «Estado»).
+
+## 10. Acceso de los devs a las VMs (VPN)
+
+Las VMs viven en la red privada del homelab. Para **pedirlas** no hace falta red (es un PR), pero
+para **entrar** por `make ssh` o `make tunnel` sí. Nada del homelab se abre a Internet.
+
+Requisitos, uses la VPN que uses (WireGuard, Tailscale, Headscale…):
+
+- **Solo la red de las VMs** (`network.prefix` de `homelab.yaml`) y **solo el puerto 22**. Nunca la
+  red de gestión de Proxmox (`:8006`) ni el resto de la LAN.
+- **Un acceso por persona**, que se pueda revocar. Al dar de baja a alguien
+  ([operador.md](operador.md#alta-y-baja-de-una-persona)), quítale también la VPN.
+- **El admin** sí puede llegar a la red de gestión. Usa un perfil distinto del de los devs.
+
+Ejemplo con Tailscale: un *subnet router* en el homelab que anuncia `<prefix>.0/24`, y una ACL que
+solo permite `tcp:22` hacia esa red al grupo de los devs.
+
+> [!NOTE]
+> La VPN decide **quién llega** a la red de las VMs, pero no aísla un proyecto de otro: dentro de
+> esa red, las VMs se ven entre sí. Es el riesgo [A-9](seguridad.md#riesgos-aceptados).
+
+**Comprobación:** desde la máquina de un dev con la VPN activa, `make ssh NAME=<vm-de-su-proyecto>`
+entra; `curl -k https://<nodo>:8006` y el SSH a una VM de otro proyecto no llegan o se rechazan.
