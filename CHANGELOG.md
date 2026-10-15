@@ -28,6 +28,9 @@ versiones menores.
   - `make check` comprueba que el esquema y el catálogo tienen los mismos perfiles.
 - **Dataspace:** el perfil `dataspace-kind` pasa a ser un extra opcional. Sus secretos solo se
   exigen si hay peticiones de ese perfil.
+- [docs/bootstrap.md](docs/bootstrap.md) §0: el cluster se instala con
+  [platform-proxmox](https://github.com/teo-devops/platform-proxmox) (`make handoff` da el bloque `proxmox:`);
+  para un cluster existente, la lista de requisitos.
 - `LICENSE` (Apache-2.0), [SECURITY.md](SECURITY.md) y un [CONTRIBUTING.md](CONTRIBUTING.md) en
   dos partes.
 

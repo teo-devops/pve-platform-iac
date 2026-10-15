@@ -14,127 +14,45 @@ PyYAML, `jq` y `curl`.
 
 En los comandos, sustituye `<ORG>` por la organización de GitHub y `<HCP_ORG>` por la de HCP.
 
-Orden: §0 (Proxmox) → §1–§9 (repo, GitHub, HCP, tokens, primer deploy) → §10 (acceso de los devs)
+Orden: §0 (Proxmox, con platform-proxmox) → §1–§9 (repo, GitHub, HCP, tokens, primer deploy) → §10 (acceso de los devs)
 → §11 (copias de seguridad).
 
 ## 0. Proxmox: lo que tiene que estar antes
 
-El repo no instala ni configura Proxmox: da por hecho un host o cluster sano. Esto se hace **una vez
-por nodo**, como root en la consola o por SSH, y siempre **con acceso a la consola física o
-fuera de banda** a mano: un error en la red te deja sin acceso al nodo.
+Este repo no instala Proxmox: da por hecho un cluster sano (de 1 a N nodos).
 
-1. **Instalación (PVE 9.x).** Decide aquí dos cosas que después cuesta cambiar:
-   - **Disco:** con ZFS (`ashift=12`, `compression=lz4`), el datastore de las VMs se llama
-     `local-zfs`; con ext4/xfs, `local-lvm`. Es el valor de `datastore` en `platform.yaml`. ZFS
-     `RAID0` con un solo disco **no tiene redundancia**: si muere el disco, se pierden sus VMs (ver
-     el paso 9).
-   - **Nombre (FQDN) e IP estática definitivos.** El certificado del nodo (`pve-ssl.pem`) incluye
-     ambos y es lo que valida el provider (§3). Si cambian después: `pvecm updatecerts --force` y
-     repite §3.
-2. **Repositorios sin suscripción.** PVE 9 (Debian 13 «trixie») usa ficheros deb822 `.sources`;
-   los repos enterprise sin suscripción hacen fallar `apt update` con un 401:
+### Opción recomendada: platform-proxmox
 
-   ```sh
-   cd /etc/apt/sources.list.d
-   for f in pve-enterprise.sources ceph.sources; do
-     [ -f "$f" ] && ! grep -qi '^Enabled: *false' "$f" && printf 'Enabled: false\n' >> "$f"
-   done
-   cat > pve-no-subscription.sources <<'EOF'
-   Types: deb
-   URIs: http://download.proxmox.com/debian/pve
-   Suites: trixie
-   Components: pve-no-subscription
-   Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
-   EOF
-   apt update && apt full-upgrade -y
-   ```
-   `Enabled: false` va **sin** línea en blanco delante: en deb822 una línea en blanco separa
-   entradas, y apt lo leería como una entrada vacía y daría error. Con PVE 8 el nombre es
-   `bookworm` y los ficheros son `.list`.
-3. **Memoria de ZFS (solo con ZFS).** El caché ARC compite con las VMs por la RAM.
-   `cat /sys/module/zfs/parameters/zfs_arc_max`: si sale `0` (sin límite), fíjalo (aquí, 6 GiB) y
-   reinicia:
-
-   ```sh
-   echo "options zfs zfs_arc_max=$((6*1024**3))" > /etc/modprobe.d/zfs.conf && update-initramfs -u
-   ```
-4. **Red.** El instalador crea `vmbr0` sobre la NIC. Si `platform.yaml` lleva `vlan_tag`, el bridge
-   tiene que admitir VLAN. Edita `/etc/network/interfaces` y aplícalo con `ifreload -a`, guardando
-   antes una copia:
-
-   ```
-   iface vmbr0 inet static
-       ...
-       bridge-vlan-aware yes
-       bridge-vids 2-4094
-   ```
-   Si el NIC es uno solo, por él pasan la gestión, las VMs y corosync: es suficiente en un cluster pequeño,
-   pero no lo satures con copias de seguridad en horario de trabajo.
-5. **DNS.** Comprueba que el servidor que vas a poner en `network.dns` responde de verdad. Muchos
-   routers dan la puerta de enlace, pero no sirven DNS:
-
-   ```sh
-   dig +short @<dns> github.com     # tiene que devolver IPs
-   ```
-   Haz lo mismo con el `/etc/resolv.conf` de cada nodo: sin DNS, el nodo no puede descargar la
-   imagen base.
-6. **Almacenamiento de la imagen base.** El datastore `image_datastore` tiene que admitir el
-   contenido `import`, que no viene activado por defecto. **Añádelo a los que ya tenga**, sin
-   quitar ninguno:
-
-   ```sh
-   pvesm status --content import                     # si 'local' no sale, falta
-   grep -A3 '^dir: local$' /etc/pve/storage.cfg      # mira su línea 'content'
-   pvesm set local --content iso,vztmpl,backup,import   # la lista que tenía + import
-   ```
-   Las VMs se reparten entre los nodos por `vmid % número de nodos`. Por eso `datastore` e
-   `image_datastore` tienen que existir **con el mismo nombre en todos los nodos**.
-7. **Cluster (solo con más de un nodo).**
-
-   ```sh
-   pvecm create <nombre>                    # en el primero; máximo 15 caracteres (límite de corosync)
-   pvecm add <ip-del-primero> --use_ssh     # en cada uno de los demás (o --fingerprint <sha256>)
-   pvecm status                             # "Quorate: Yes" y todos los votos
-   ```
-   - **Con dos nodos**, si uno cae, el otro pierde el quórum y deja de aceptar cambios. Añade un
-     QDevice en una tercera máquina (`pvecm qdevice setup <ip>`) o asume esa limitación.
-   - `/etc/pve` se replica entre los nodos. Las ACL, `storage.cfg` y los usuarios se cambian **una
-     sola vez**, en cualquier nodo.
-   - Todos los nodos comparten la CA del cluster: la de §3 vale para todos.
-8. **Tu cuenta de admin en Proxmox.** No uses `root@pam` en el día a día: déjalo para la consola y
-   las emergencias.
-
-   ```sh
-   pveum user add <tu-usuario>@pve && pveum passwd <tu-usuario>@pve
-   pveum acl modify / -user <tu-usuario>@pve -role Administrator
-   ```
-   Activa el segundo factor **por usuario**, cada uno desde su cuenta (Datacenter → Permissions →
-   Two Factor → Add → TOTP). **No** lo actives en el realm (`pveum realm modify pve --tfa …`). Es el
-   mecanismo antiguo: exige que el admin cargue antes la clave de cada usuario, y si falta, deja
-   bloqueado el realm entero (`missing required 2nd keys` en `journalctl -u pvedaemon`). Para
-   deshacerlo: `pveum realm modify pve --delete tfa`.
-   En la pantalla de login, el usuario va **sin** `@pve` y el realm se elige en el desplegable.
-9. **Copias de seguridad.** Terraform puede recrear una VM, pero no sus datos. Sin almacenamiento
-   compartido ni replicación, si cae un disco se pierden sus VMs. Las copias van a **Proxmox
-   Backup Server con un datastore en S3 (SeaweedFS)**: se montan en el §11, cuando ya existan las
-   primeras VMs.
-10. **Capacidad.** Reserva en cada nodo unos 2 hilos y la RAM del sistema y del ARC, y deja libre
-    entre un 15 % y un 20 % del pool ZFS: por encima del 80–85 % de ocupación, ZFS va mucho más
-    lento. La RAM es lo que limita cuántas VMs caben, no la CPU. Antes de pedir un `ds-mvp-kind`
-    (16 GB), comprueba que cabe en el nodo que le toca (`free -g`): el reparto es por `vmid`, no por
-    espacio libre.
-11. **Exposición.** Ni `:8006` ni el SSH de los nodos se abren a Internet. Para administrar desde
-    fuera, usa la VPN (§10).
-
-**Comprobación:**
+[platform-proxmox](https://github.com/teo-devops/platform-proxmox) lleva de los servidores sin
+instalar a un cluster listo, a partir de un inventario de Ansible: instalación desatendida, repos,
+ZFS, red, cluster, QDevice, admins con segundo factor, contenido `import` y copias. Al terminar:
 
 ```sh
-pveversion                                  # 9.x
-apt update                                  # sin 401
-pvecm status                                # Quorate: Yes (con cluster)
-pvesm status --content images,import        # datastore e image_datastore, activos
-zpool status                                # ONLINE (con ZFS)
+make validate ENV=<entorno>     # en platform-proxmox
+make handoff ENV=<entorno>      # imprime el bloque proxmox: de platform.yaml (§2)
 ```
+
+### Si ya tienes un cluster
+
+Comprueba que cumple lo mismo que deja platform-proxmox (el detalle de cada punto está en su
+documentación):
+
+1. **Proxmox VE 8.4 o posterior**, con los repos sin errores (`apt update` sin 401) y, con más de un
+   nodo, en cluster con quórum (`pvecm status` → `Quorate: Yes`). Con un número par de nodos, un
+   QDevice.
+2. **Datastores con el mismo nombre en todos los nodos.** Las VMs se reparten por
+   `vmid % número de nodos`. Con ZFS es `local-zfs`; con ext4/xfs, `local-lvm`.
+3. **Contenido `import`** en el datastore de las imágenes (`image_datastore`), que no viene
+   activado por defecto. Añádelo sin quitar los que ya tiene:
+   `pvesm set local --content iso,vztmpl,backup,import`.
+4. **El nombre e IP de cada nodo, definitivos.** El certificado del nodo los incluye (§3).
+5. **Un DNS que responda** (`dig +short @<dns> github.com`): será el `network.dns` de las VMs.
+6. **Si el bridge lleva `vlan_tag`**, tiene que ser VLAN-aware (`bridge-vlan-aware yes`).
+7. **Admins con su usuario `@pve`** y TOTP **por usuario**, nunca en el realm (bloquea el realm
+   entero). `root@pam` solo para emergencias.
+8. **Copias** fuera del cluster (§11) y **nada expuesto a Internet** (`:8006`, SSH): la VPN, en §10.
+
+**Comprobación:** `make preflight` (§9) verifica el TLS contra el endpoint y los permisos del token.
 
 ## 1. Organización de GitHub o cuenta personal
 

@@ -12,10 +12,12 @@ proxmox:
   nodes:
     TODO-pve1: TODO-192.168.1.10
   # Donde van los discos de las VMs: local-zfs si instalaste con ZFS, local-lvm con
-  # ext4/xfs. Mismo nombre en TODOS los nodos (docs/bootstrap.md §0).
+  # ext4/xfs. Mismo nombre en TODOS los nodos (docs/bootstrap.md §0;
+  # `make handoff` de platform-proxmox lo rellena).
   datastore: local-lvm
   # Donde se descarga la imagen base: tiene que admitir el contenido "import", que no
-  # viene activado por defecto (docs/bootstrap.md §0, paso 6)
+  # viene activado por defecto (docs/bootstrap.md §0, punto 3;
+  # platform-proxmox lo activa)
   image_datastore: local
   bridge: vmbr0
   vlan_tag: null
