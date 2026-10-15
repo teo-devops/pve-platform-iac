@@ -9,7 +9,7 @@ terraform {
       source = "bpg/proxmox"
       # Fijado a la menor. El hash exacto lo fija .terraform.lock.hcl (versionado):
       # un provider distinto del revisado no se instala. Subirlo = PR de Dependabot.
-      version = "~> 0.111.0"
+      version = "~> 0.114.0"
     }
   }
 }
