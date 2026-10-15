@@ -26,7 +26,7 @@ Qué leer según quién seas.
 
 | Documento | Para |
 |---|---|
-| [diseno.md](diseno.md) | Cómo funciona y por qué: arquitectura, flujo y decisiones (D-01…D-12) |
+| [diseno.md](diseno.md) | Cómo funciona y por qué: arquitectura, flujo y decisiones (D-01…D-13) |
 | [seguridad.md](seguridad.md) | Modelo de amenazas, controles (R-01…R-15) y riesgos aceptados (A-1…A-8) |
 
 ## Convenciones de esta documentación

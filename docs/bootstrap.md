@@ -5,7 +5,8 @@ repo** (organización, ruleset, environments, HCP, runners, ACL de Proxmox y CA)
 
 **Antes de empezar necesitas:** acceso root a un nodo de Proxmox VE 8.4 o posterior (probado con
 9.x), ser owner de la organización de GitHub (o poder crearla), una cuenta en HCP Terraform y un host
-pequeño en el homelab para los runners (LXC o VM con Docker: 2 vCPU y 4 GB bastan). En tu máquina:
+pequeño en el homelab para los runners (LXC o VM con Docker: 2 vCPU y 4 GB bastan), y una cuenta de
+Cloudflare para la VPN de los devs (§10). En tu máquina:
 `gh` autenticado con permisos de admin (`gh auth refresh -s admin:org`), `terraform`, `python3` con
 PyYAML, `jq` y `curl`.
 
@@ -363,22 +364,91 @@ y anótalo en el CHANGELOG.
 ## 10. Acceso de los devs a las VMs (VPN)
 
 Las VMs viven en la red privada del homelab. Para **pedirlas** no hace falta red (es un PR), pero
-para **entrar** por `make ssh` o `make tunnel` sí. Nada del homelab se abre a Internet.
+para **entrar** por `make ssh` o `make tunnel` sí. La VPN es **Cloudflare Zero Trust**
+([D-13](diseno.md#decisiones)): no se abre ningún puerto del router.
 
-Requisitos, uses la VPN que uses (WireGuard, Tailscale, Headscale…):
+```
+portátil del dev                        Cloudflare                       homelab
+WARP (login con GitHub) ──► Gateway: ¿quién eres? ¿puedes? ──► túnel ──► cloudflared ──► VM :22
+                                                                (saliente)   (LXC)
+```
 
-- **Solo la red de las VMs** (`network.prefix` de `homelab.yaml`) y **solo el puerto 22**. Nunca la
-  red de gestión de Proxmox (`:8006`) ni el resto de la LAN.
-- **Un acceso por persona**, que se pueda revocar. Al dar de baja a alguien
-  ([operador.md](operador.md#alta-y-baja-de-una-persona)), quítale también la VPN.
-- **El admin** sí puede llegar a la red de gestión. Usa un perfil distinto del de los devs.
+- `cloudflared` corre en un LXC del homelab y abre un túnel **saliente** hacia Cloudflare.
+- Cada dev instala el cliente **WARP** y entra en la organización de Zero Trust con su cuenta de
+  GitHub. Desde ese momento, el tráfico hacia la red de las VMs va por el túnel.
+- Las **políticas de Gateway** deciden a qué puede llegar cada persona: los devs, solo al `:22` de
+  la red de las VMs; los admins, también a la gestión de Proxmox.
 
-Ejemplo con Tailscale: un *subnet router* en el homelab que anuncia `<prefix>.0/24`, y una ACL que
-solo permite `tcp:22` hacia esa red al grupo de los devs.
+Requisitos que no cambian: solo la red de las VMs y solo el `:22` para los devs, nunca `:8006`; un
+acceso por persona, revocable; el admin en una política aparte.
 
-> [!NOTE]
-> La VPN decide **quién llega** a la red de las VMs, pero no aísla un proyecto de otro: dentro de
-> esa red, las VMs se ven entre sí. Es el riesgo [A-9](seguridad.md#riesgos-aceptados).
+**Antes de empezar:** una cuenta de Cloudflare (no hace falta tener un dominio en ella) y un LXC
+pequeño en el homelab para el conector (Debian/Ubuntu, 1 vCPU, 512 MB). El LXC tiene que llegar a la
+red de las VMs y, para los admins, a la de gestión. Créalo **a mano y fuera de los pools del repo**:
+si lo gestionara el pipeline, un `apply` podría cortar el acceso. No uses el host de runners: allí
+vive el PAT (A-5).
 
-**Comprobación:** desde la máquina de un dev con la VPN activa, `make ssh NAME=<vm-de-su-proyecto>`
-entra; `curl -k https://<nodo>:8006` y el SSH a una VM de otro proyecto no llegan o se rechazan.
+En los comandos, `<TEAM>` es el nombre de tu organización de Zero Trust, `<VMS>` la red de las VMs
+(`network.prefix` de `homelab.yaml` + `.0/24`) y `<GESTION>` la red de gestión de los nodos.
+
+1. **Organización de Zero Trust.** dash.cloudflare.com → Zero Trust. Elige el nombre del equipo
+   (`<TEAM>`; tu portal será `https://<TEAM>.cloudflareaccess.com`) y el plan **Free** (hasta 50
+   usuarios).
+2. **Login con GitHub.** La identidad es la misma que en `projects.yaml`.
+   - En GitHub, crea una OAuth App (de la organización, o en tu cuenta → Settings → Developer
+     settings → OAuth Apps), con:
+     - Homepage: `https://<TEAM>.cloudflareaccess.com`
+     - Callback: `https://<TEAM>.cloudflareaccess.com/cdn-cgi/access/callback`
+   - En Zero Trust: Settings → Authentication → Login methods → Add new → GitHub. Pega el Client ID
+     y el secret, y pulsa **Test**.
+3. **Quién puede conectar un dispositivo.** Settings → WARP Client → Device enrollment permissions
+   → Manage → regla **Allow**:
+   - Include: *Emails* con la lista de personas (las de `admins` y `members` de `projects.yaml`).
+   - Con organización de GitHub, en su lugar: *GitHub organization* = `<ORG>`.
+   - Login method: GitHub.
+4. **Túnel.** Networks → Tunnels → Create a tunnel → *Cloudflared* → nombre `homelab`. El panel
+   muestra el comando con el token: ejecútalo **en el LXC del conector**. Es, más o menos:
+
+   ```sh
+   curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
+   echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' \
+     > /etc/apt/sources.list.d/cloudflared.list
+   apt update && apt install -y cloudflared
+   cloudflared service install <TOKEN-DEL-TUNEL>      # queda como servicio systemd
+   ```
+   El token es una credencial ([credenciales.md](credenciales.md#túnel-de-cloudflare)). En la
+   pestaña de rutas del túnel (*CIDR* / *Private networks*), añade `<VMS>` y `<GESTION>`. El túnel
+   tiene que salir como **HEALTHY**.
+5. **Qué tráfico va por WARP.** Settings → WARP Client → Device settings → perfil Default → Split
+   Tunnels. Por defecto está en modo *Exclude*, y **excluye las redes privadas**, que es justo donde
+   están `<VMS>` y `<GESTION>`. Cámbialo a modo **Include** con solo `<VMS>` y `<GESTION>`. Así, por
+   Cloudflare pasa solo el tráfico hacia el homelab, y el resto sale por la red normal del dev.
+6. **Proxy de Gateway.** Settings → Network → activa el proxy **TCP**. Sin él no se aplican las
+   políticas por identidad a las redes privadas.
+7. **Políticas.** Gateway → Firewall policies → **Network**, en este orden (se evalúan de arriba
+   abajo):
+
+   | # | Nombre | Acción | Condiciones |
+   |---|---|---|---|
+   | 1 | `admins-gestion` | Allow | Destination IP en `<GESTION>` **y** puerto `8006` o `22` **y** el email del usuario está en la lista de admins |
+   | 2 | `devs-ssh-vms` | Allow | Destination IP en `<VMS>` **y** puerto `22` **y** el email del usuario está en la lista de devs y admins |
+   | 3 | `homelab-resto` | Block | Destination IP en `<VMS>` o en `<GESTION>` |
+
+   Si quieres que nadie llegue siquiera a las VMs de otros proyectos, sustituye la regla 2 por una
+   por proyecto: destino = el rango de IP de ese proyecto en `projects.yaml`, usuarios = sus
+   `members`. Eso cierra el acceso de cada **persona** a otros proyectos; entre las propias VMs,
+   la red sigue plana ([A-9](seguridad.md#riesgos-aceptados)). Esas listas se mantienen a mano,
+   junto con `projects.yaml` ([operador.md](operador.md#alta-y-baja-de-una-persona)).
+8. **Prueba como dev**, desde un portátil que no sea el del admin (lo que tiene que hacer cada dev
+   está en [inicio-rapido.md](inicio-rapido.md)):
+
+   ```sh
+   warp-cli registration new <TEAM>     # abre el navegador: login con GitHub
+   warp-cli connect && warp-cli status  # "Connected"
+   ```
+
+**Comprobación:**
+- Con un usuario dev: `make ssh NAME=<vm-de-su-proyecto>` entra, y `curl -k
+  https://<nodo>:8006` no llega.
+- Con un admin: llega a `:8006`.
+- En Zero Trust → Logs → Gateway → Network se ven el *allow* y el *block*.
