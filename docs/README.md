@@ -20,13 +20,13 @@ Qué leer según quién seas.
 | [credenciales.md](credenciales.md) | Cada secreto: qué es, dónde vive, alcance y cómo rotarlo |
 | [pipeline.md](pipeline.md) | Cada workflow y job, y cómo depurarlo |
 | [../runner/README.md](../runner/README.md) | El host de runners |
-| [runbooks/](runbooks/) | Incidentes: [deriva](runbooks/deriva-detectada.md), [clave de host cambiada](runbooks/clave-de-host-cambiada.md), [lock del estado](runbooks/lock-estado.md), [apply fallido](runbooks/apply-fallido.md), [runner caído](runbooks/runner-caido.md), [secreto comprometido](runbooks/token-comprometido.md) |
+| [runbooks/](runbooks/) | Incidentes: [deriva](runbooks/deriva-detectada.md), [clave de host cambiada](runbooks/clave-de-host-cambiada.md), [lock del estado](runbooks/lock-estado.md), [apply fallido](runbooks/apply-fallido.md), [runner caído](runbooks/runner-caido.md), [secreto comprometido](runbooks/token-comprometido.md), [restaurar una VM](runbooks/restaurar-vm.md) |
 
 ## Todos
 
 | Documento | Para |
 |---|---|
-| [diseno.md](diseno.md) | Cómo funciona y por qué: arquitectura, flujo y decisiones (D-01…D-13) |
+| [diseno.md](diseno.md) | Cómo funciona y por qué: arquitectura, flujo y decisiones (D-01…D-14) |
 | [seguridad.md](seguridad.md) | Modelo de amenazas, controles (R-01…R-15) y riesgos aceptados (A-1…A-8) |
 
 ## Convenciones de esta documentación

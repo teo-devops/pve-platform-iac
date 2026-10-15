@@ -109,6 +109,7 @@ los dos).
 | A-7 | El plan de PR no ve la deriva (`-refresh=false`) | Refrescar exige `VM.Config.Disk` (un permiso de modificación) | El plan de main sí refresca, y drift.yml lo hace a diario | — |
 | A-8 | Lo que no gestiona el repo (otras VMs del homelab) queda fuera de la deriva | Terraform solo conoce su estado | Las ACL impiden que el token toque VMs fuera de los pools del repo | — |
 | A-9 | Red plana: las VMs de todos los proyectos están en el mismo bridge y se ven entre sí (puertos de servicio incluidos, como la API de k3s o el MVP) | Simplicidad del homelab: un solo bridge y una sola red | Las cuentas SSH son por proyecto (D-10); Cloudflare Gateway solo deja llegar al `:22`, y opcionalmente solo al rango del propio proyecto ([bootstrap.md §10](bootstrap.md#10-acceso-de-los-devs-a-las-vms-vpn), D-13) | Firewall de Proxmox con un grupo de seguridad por proyecto, o una VLAN o zona SDN por proyecto |
+| A-10 | Si se pierde la clave de cifrado de las copias, no se puede restaurar ninguna | Es el precio de que ni PBS ni SeaweedFS vean los datos en claro (D-14) | Copia de la clave fuera del homelab, en el gestor de contraseñas, en cuanto se crea ([credenciales.md](credenciales.md#copias-de-seguridad)); restauración de prueba mensual | Una segunda clave maestra RSA de PBS (`proxmox-backup-client key create-master-key`) guardada en otro sitio |
 
 ## Qué hacer si…
 

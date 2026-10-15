@@ -125,6 +125,7 @@ El workflow `drift` corre cada día. Si falla, hay un issue `drift`:
 | mes | `make image-pin` (parches de seguridad de Ubuntu en las VMs nuevas) |
 | mes | ¿Hay VMs que nadie usa? `make list` y preguntar a cada proyecto |
 | antes de que caduque | PAT de runners y token de ghcr ([credenciales.md](credenciales.md)) |
+| mes | Restauración de prueba de una VM ([runbooks/restaurar-vm.md](runbooks/restaurar-vm.md#prueba-mensual)) y revisar en PBS que la copia diaria, la retención, la limpieza y la verificación salen en verde |
 | trimestre | Revisar miembros de la organización y de cada proyecto; `make preflight` |
 
 ## Break-glass

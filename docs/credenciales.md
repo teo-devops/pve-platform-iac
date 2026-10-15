@@ -22,6 +22,9 @@ Piden por PR, y el pipeline aplica con secretos que solo ven los jobs de `main`.
 | PAT de runners | `/etc/homelab-runner/env` en el host de runners | `runner/supervisor.sh` | Fine-grained, organización, solo «Self-hosted runners: read and write» |
 | Token del túnel de Cloudflare | servicio `cloudflared` en el LXC del conector | `cloudflared` | Permite levantar un conector de **ese** túnel ([abajo](#túnel-de-cloudflare)) |
 | Secret de la OAuth App de GitHub | Zero Trust → Login methods | Cloudflare | Login de las personas en WARP; no da acceso a GitHub |
+| Clave de cifrado de las copias | `/etc/pve/priv/storage/pbs-homelab.enc` + **copia fuera del homelab** | nodos PVE (vzdump) | Sin ella no se restaura nada ([abajo](#copias-de-seguridad)) |
+| Token `pve@pbs!backup` | `/etc/pve/priv/storage/pbs-homelab.pw` | nodos PVE | `DatastoreBackup` en `/datastore/homelab`: hacer y restaurar sus copias |
+| Access key S3 `pbs-homelab` | endpoint S3 de PBS | PBS | Leer, escribir y listar solo el bucket `pbs-homelab` |
 
 Los environments `production` y `plan` solo despliegan desde `main` ([bootstrap.md §5](bootstrap.md#5-environments-y-secretos)),
 así que ningún job de una rama o de un fork recibe estos secretos.
@@ -137,6 +140,30 @@ Hay dos credenciales:
 
 Para quitarle el acceso a **una persona**, mira
 [operador.md](operador.md#alta-y-baja-de-una-persona).
+
+## Copias de seguridad
+
+- **Clave de cifrado** (`pbs-homelab.enc`). Es la más crítica: sin ella las copias no sirven, y vive
+  en el mismo `/etc/pve` que protege. En cuanto la crees, guarda su contenido en el gestor de
+  contraseñas:
+
+  ```sh
+  cat /etc/pve/priv/storage/pbs-homelab.enc     # JSON: pégalo entero en el gestor de contraseñas
+  ```
+  Para restaurar en un Proxmox nuevo: añade el storage como en §11 paso 6, pero con
+  `--encryption-key "$(cat clave.enc)"` en lugar de `autogen`. **Rotar** no tiene sentido: una clave
+  nueva solo cifra las copias nuevas, y las antiguas siguen necesitando la vieja.
+- **Token `pve@pbs!backup`.** Solo puede hacer copias y restaurar las suyas. **Rotar:**
+  `proxmox-backup-manager user generate-token pve@pbs backup2`, después `acl update` como en el paso
+  5, `pvesm set pbs-homelab --username 'pve@pbs!backup2' --password '<nuevo>'` y, al final,
+  `proxmox-backup-manager user delete-token pve@pbs backup`.
+- **Access key S3.** Vive en la configuración del endpoint de PBS. **Rotar:** crea otra identidad
+  en el `s3.json` de SeaweedFS, cámbiala en PBS (Configuration → Remotes → S3 Endpoints → Edit) y
+  borra la vieja.
+- **Para recuperar todo si cae el host**, necesitas tener **fuera del homelab** la clave de
+  cifrado, la access key S3 y el nombre del datastore (`homelab`). Con eso, en un PBS nuevo:
+  `datastore create homelab … --reuse-datastore true --overwrite-in-use true`, y el storage en PVE
+  como arriba.
 
 ## Lo que NO es una credencial
 

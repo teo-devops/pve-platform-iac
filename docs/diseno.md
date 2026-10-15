@@ -213,6 +213,32 @@ políticas de Gateway lo limitan al `:22` de la red de las VMs. Cómo se monta:
 contenido, porque SSH va cifrado de extremo a extremo. Si Cloudflare cae, no se puede entrar a las
 VMs, aunque las VMs y el pipeline siguen funcionando: los runners no usan el túnel.
 
+### D-14 · Copias con Proxmox Backup Server sobre S3 (SeaweedFS) — 15-oct-2026
+
+**Decisión:** Proxmox VE copia cada noche todas las VMs y LXC a Proxmox Backup Server 4. El
+datastore de PBS usa como *backend* un bucket del SeaweedFS que ya corre en otra máquina. Las copias
+se cifran en el nodo con una clave que se guarda fuera del homelab. Cómo se monta:
+[bootstrap.md §11](bootstrap.md#11-copias-de-seguridad-proxmox-backup-server-sobre-seaweedfs-s3).
+**Por qué:**
+- Proxmox VE no escribe en S3; PBS sí, desde la versión 4.
+- PBS deduplica y hace copias incrementales: cada noche solo sube lo que ha cambiado.
+- El cifrado en el cliente evita confiar en el almacenamiento.
+- SeaweedFS es el almacenamiento de objetos que ya usamos en otros proyectos.
+
+**Alternativas:**
+- *MinIO*: su edición comunitaria ha dejado de mantenerse, y SeaweedFS ya es el estándar en
+  nuestros proyectos.
+- *`vzdump` a un directorio y después `rclone` a S3*: copias completas cada vez, sin deduplicar,
+  y más scripts que mantener.
+- *PBS con un disco local*: queda en el mismo hardware que lo que protege.
+
+**Coste:**
+- El backend S3 de PBS es reciente (PBS 4, 2025): hay que probar la restauración de verdad, no solo
+  que la copia termina.
+- PBS necesita una caché local de 64–128 GiB.
+- Un datastore S3 solo lo puede usar una instancia de PBS a la vez.
+- Si se pierde la clave de cifrado, las copias no sirven ([A-10](seguridad.md#riesgos-aceptados)).
+
 ## Qué viene de proxmox-iac y qué cambia
 
 Este repo deriva de `proxmox-iac`, el repo del cluster retech de i2cat, que sigue igual. Se reutiliza
