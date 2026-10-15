@@ -1,9 +1,9 @@
-# pr-plan.yml — `terraform plan` de un PR, en el homelab, SIN ejecutar codigo del PR.
+# pr-plan.yml — `terraform plan` de un PR, en la infraestructura, SIN ejecutar codigo del PR.
 #
-# El problema: el plan necesita llegar a Proxmox (runner del homelab) y leer el
+# El problema: el plan necesita llegar a Proxmox (runner de la plataforma) y leer el
 # estado (token de HCP). Si ese job ejecutara el codigo del PR, un PR malicioso
 # (un .tf con un `external`, un workflow cambiado, un script tocado) correria en
-# el homelab con esas credenciales.
+# la infraestructura con esas credenciales.
 #
 # La solucion (docs/diseno.md, D-05; docs/seguridad.md, R-02):
 #   - `pull_request_target`: el WORKFLOW es siempre el de main, no el del PR.
@@ -15,13 +15,20 @@
 #   - Token de Proxmox de SOLO LECTURA (PVEAuditor en los pools) y -refresh=false
 #     -lock=false: el plan no escribe nada en ningun sitio.
 #
-# Runner: `homelab-plan` (grupo de runners restringido a ESTE workflow en main;
+# Runner: `platform-plan` (grupo de runners restringido a ESTE workflow en main;
 # docs/bootstrap.md §6). Secretos: environment `plan` (PM_PLAN_TOKEN, TF_API_TOKEN).
+#
+# Repo publico (docs/seguridad.md, A-11): cualquiera puede abrir un PR. Solo se
+# planifica sin preguntar a OWNER/MEMBER/COLLABORATOR; para el resto, el admin pone
+# la etiqueta `plan` tras leer el PR, y un push nuevo la quita (codigo nuevo,
+# aprobacion nueva). El job con runner propio solo existe si la instalacion lo activa
+# (variable del repo PLATFORM_RUNNERS=true): en un fork o en una copia de la
+# plantilla no queda nada en cola.
 name: pr-plan
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
 
 # Sin permisos por defecto; cada job pide lo suyo.
 permissions: {}
@@ -40,7 +47,7 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: read
+      pull-requests: write   # leer los ficheros del PR y quitar la etiqueta `plan`
     outputs:
       only_requests: ${{ steps.files.outputs.only_requests }}
       changes: ${{ steps.files.outputs.changes }}
@@ -50,13 +57,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           ASSOC: ${{ github.event.pull_request.author_association }}
+          ACTION: ${{ github.event.action }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
         run: |
-          # Solo gente de la organizacion o colaboradores del repo. (Un repo privado
-          # no se puede forkear desde fuera, pero no cuesta nada comprobarlo.)
-          case "$ASSOC" in OWNER|MEMBER|COLLABORATOR) ;; *)
+          # De confianza: gente de la organizacion o colaboradores del repo. El
+          # resto, solo con la etiqueta `plan` (la pone un admin: exige rol triage o
+          # superior) y solo para el commit que el admin vio.
+          trusted=false
+          case "$ASSOC" in OWNER|MEMBER|COLLABORATOR) trusted=true ;; esac
+          labeled=false
+          case " $LABELS " in *" plan "*) labeled=true ;; esac
+          if [ "$trusted" = false ] && [ "$labeled" = true ] && [ "$ACTION" = synchronize ]; then
+            gh pr edit "$PR" -R "$GITHUB_REPOSITORY" --remove-label plan
+            labeled=false
+            echo "Push nuevo de '$ASSOC': etiqueta \`plan\` retirada; un admin tiene que revisarlo otra vez." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$trusted" = false ] && [ "$labeled" = false ]; then
             echo "only_requests=false" >> "$GITHUB_OUTPUT"
-            echo "Autor '$ASSOC': no se planifica." >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
-          esac
+            echo "Autor '$ASSOC' sin la etiqueta \`plan\`: no se planifica (docs/operador.md -> \"Revisar un PR\")." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           # filename y previous_filename (renombrados): los dos tienen que estar en
           # requests/{vms,clusters}/<nombre>.yaml.
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
@@ -78,8 +98,8 @@ jobs:
 
   plan:
     needs: gate
-    if: needs.gate.outputs.only_requests == 'true'
-    runs-on: [self-hosted, homelab-plan]
+    if: vars.PLATFORM_RUNNERS == 'true' && needs.gate.outputs.only_requests == 'true'
+    runs-on: [self-hosted, platform-plan]
     environment: plan
     permissions:
       contents: read
@@ -87,6 +107,7 @@ jobs:
     timeout-minutes: 20
     env:
       TF_CLOUD_ORGANIZATION: ${{ vars.TF_CLOUD_ORGANIZATION }}
+      TF_WORKSPACE: ${{ vars.TF_WORKSPACE || 'pve-platform' }}
       TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
       TF_VAR_pm_api_token: ${{ secrets.PM_PLAN_TOKEN }}
       TF_IN_AUTOMATION: "1"
@@ -175,7 +196,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const marker = '<!-- homelab-iac:plan -->';
+            const marker = '<!-- pve-platform-iac:plan -->';
             const read = f => fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
             let plan = read('plan.txt');
             if (plan.length > 55000) plan = plan.slice(0, 55000) + '\n... (recortado; el plan completo esta en el log del job)';

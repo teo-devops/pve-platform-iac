@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=../../../schema/cluster.schema.json
+# EJEMPLO (no se aplica: vive en examples/). Una peticion real va en requests/clusters/
+# y se crea con `make new-cluster`. Referencia de cada campo: docs/peticiones.md
+project: equipo-a
+flavor_size: k3s-mini
+workers: 2
+vmid_base: 1110
+ip_base: 110

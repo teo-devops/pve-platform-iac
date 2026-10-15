@@ -1,10 +1,10 @@
-# Imagen de los runners del homelab (homelab-plan y homelab-apply).
+# Imagen de los runners de la plataforma (platform-plan y platform-apply).
 #
 # Base oficial de GitHub, version fijada (Dependabot la sube por PR). Encima, SOLO
 # las herramientas que usan los workflows; Terraform lo instala cada job con
 # hashicorp/setup-terraform en la version fijada en el workflow.
 #
-# Construir en el host de runners:  docker build -t homelab-runner:local runner/
+# Construir en el host de runners:  docker build -t platform-runner:local runner/
 FROM ghcr.io/actions/actions-runner:2.338.0
 
 USER root

@@ -6,7 +6,7 @@ colaboradores curiosos). Para usarla: [inicio-rapido.md](inicio-rapido.md). Para
 
 ## Qué es
 
-Una plataforma GitOps para el Proxmox del homelab. **La fuente de verdad es este repositorio**:
+Una plataforma GitOps para el Proxmox de la plataforma. **La fuente de verdad es este repositorio**:
 crear, cambiar o borrar una máquina es escribir, cambiar o borrar un YAML en `requests/`. Nadie
 aplica con credenciales locales; solo el pipeline de GitHub Actions cambia la infraestructura, y solo
 después de que un admin revise y mergee el PR.
@@ -27,13 +27,13 @@ después de que un admin revise y mergee el PR.
    └─► PR contra main ──┬─► pr-validate  (runner de GitHub, SIN secretos)
                         │     yamllint · esquema · iac check · fmt · validate · tflint · ansible-lint · actionlint
                         │
-                        └─► pr-plan      (runner homelab-plan, token Proxmox de SOLO LECTURA)
+                        └─► pr-plan      (runner platform-plan, token Proxmox de SOLO LECTURA)
                               código de main + solo requests/ del PR → plan → comentario en el PR
                                                               │
                                                  revisa el plan y mergea  ◄┘
                                                               │
  main ◄───────────────────────────────────────────────────────┘
-   └─► deploy  (runner homelab-apply, environment production)
+   └─► deploy  (runner platform-apply, environment production)
          plan (refresca, token de escritura) → apply DEL MISMO plan → known-hosts → configure (Ansible)
 
  cada noche ─► drift  (plan -detailed-exitcode): falla y abre un issue si Proxmox ≠ main. No corrige nada.
@@ -45,37 +45,41 @@ después de que un admin revise y mergee el PR.
 |---|---|---|
 | Peticiones | `requests/vms/*.yaml`, `requests/clusters/*.yaml` | Una VM o un cluster k3s por fichero. El nombre del fichero es el de la VM. Referencia: [peticiones.md](peticiones.md) |
 | Proyectos | `projects.yaml` | Admins, cuentas de servicio y proyectos (pool, rangos de VMID/IP, miembros). La unidad de aislamiento |
-| Plataforma | `homelab.yaml` | Nodos, red, almacenamiento e imagen base. Fuente única para Terraform y `scripts/iac` |
+| Plataforma | `platform.yaml` | Nodos, red, almacenamiento e imagen base. Fuente única para Terraform y `scripts/iac` |
 | Catálogo | `catalog/flavors.yaml`, `catalog/profiles.yaml` | Tamaños cerrados y perfiles (qué se instala) |
 | Terraform | `terraform/` | `requests.tf` lee los YAML y repite las reglas; `main.tf` crea la imagen y las VMs; `modules/vm` y `modules/k3s-cluster` |
 | Ansible | `ansible/` | Roles `base` (cuentas), `docker`, `k3s`, `monitoring`, `kind_host` y `dataspace_mvp` |
 | CLI | `scripts/iac` + `Makefile` | Asistentes, validación, resúmenes del plan, claves de host, ACL de Proxmox y preflight |
 | Pipeline | `.github/workflows/` | `pr-validate`, `pr-plan`, `deploy` y `drift`. Detalle: [pipeline.md](pipeline.md) |
-| Runners | `runner/` | Dos runners efímeros en el homelab. Detalle: [runner/README.md](../runner/README.md) |
+| Runners | `runner/` | Dos runners efímeros en la infraestructura. Detalle: [runner/README.md](../runner/README.md) |
 
 ## Decisiones
 
 Cada decisión, con fecha, alternativas descartadas y motivo. El código que las implementa las cita
 por su número (p. ej. `D-05`).
 
-### D-01 · Repositorio en una organización de GitHub (plan Team) — 14-oct-2026
+### D-01 · Organización de GitHub o cuenta personal con repo público — 14-oct-2026 (rev. 15-oct-2026)
 
-**Decisión:** el repo vive en una organización de GitHub, no en la cuenta personal `teo-devops`.
-**Alternativas:** cuenta personal con GitHub Pro; cuenta gratuita.
-**Por qué:** en una cuenta personal, todo colaborador tiene permiso de escritura (no hay rol Read) y
-podría crear ramas y lanzar workflows sobre los runners del homelab. Una organización da roles finos
-(Read/Triage/Write), equipos, rulesets y grupos de runners. En repos privados, los rulesets y los
-environments con restricciones de rama necesitan el plan Team.
-**Hecho comprobado:** el 14-oct-2026, `teo-devops` es una cuenta personal (`type: User`). Hay que
-crear la organización ([bootstrap.md](bootstrap.md#1-organización-de-github)). Los repos
-`dataspace-mvp`, dsgen y los paquetes de ghcr pueden seguir en `teo-devops`: el homelab solo los lee.
+**Decisión:** las dos formas son válidas ([bootstrap.md §1](bootstrap.md#1-organización-de-github-o-cuenta-personal)).
+Para una empresa, la recomendada es una **organización**: roles finos (Read/Triage/Write), equipos
+y grupos de runners limitados a workflows concretos. La **cuenta personal con repo público** sirve
+para equipos pequeños: los devs hacen fork sin ningún rol, y en un repo público los rulesets y los
+environments son gratis.
+**Alternativas:** cuenta personal con un repo privado. Necesita GitHub Pro para los rulesets y los
+environments, y cada colaborador tendría permiso de escritura.
+**Por qué:** en una cuenta personal no existe el rol Read: un colaborador podría crear ramas y lanzar
+workflows sobre los runners propios. En el modelo B eso se evita así: no hay más colaboradores que
+los admins; los jobs con runner propio son opt-in (`PLATFORM_RUNNERS`) y solo se disparan desde
+`main` o con la etiqueta `plan` que pone un admin; y las personas de fuera necesitan aprobación
+([A-11](seguridad.md#riesgos-aceptados)).
+**Instancia de referencia:** `teo-devops/pve-platform-iac` usa el modelo B.
 
-### D-02 · Runners propios en el homelab, efímeros y en dos grupos — 14-oct-2026
+### D-02 · Runners propios en la infraestructura, efímeros y en dos grupos — 14-oct-2026
 
-**Decisión:** dos tipos de runner en un único host del homelab (LXC o VM): `homelab-plan` y
-`homelab-apply`. Cada job corre en un contenedor nuevo que se destruye al terminar (configuración
+**Decisión:** dos tipos de runner en un único host de la plataforma (LXC o VM): `platform-plan` y
+`platform-apply`. Cada job corre en un contenedor nuevo que se destruye al terminar (configuración
 JIT de un solo uso).
-**Alternativas:** runners de GitHub con VPN o túnel al homelab; un solo runner para todo; runners
+**Alternativas:** runners de GitHub con VPN o túnel a la infraestructura; un solo runner para todo; runners
 persistentes.
 **Por qué:** la API de Proxmox está en una red privada, así que un runner de GitHub no llega a ella.
 Separar los grupos impide que el código que planifica un PR comparta máquina o credenciales con el
@@ -85,9 +89,9 @@ un host pequeño.
 
 ### D-03 · Estado en HCP Terraform (Free), con ejecución local — 14-oct-2026
 
-**Decisión:** bloque `cloud {}` con un workspace `homelab` en modo de ejecución **Local**: HCP solo
+**Decisión:** bloque `cloud {}` con un workspace `pve-platform` en modo de ejecución **Local**: HCP solo
 guarda el estado (cifrado y versionado) y hace de lock. Los plan/apply corren en nuestros runners.
-**Alternativas:** MinIO (S3) en el homelab con `use_lockfile`; PostgreSQL en el homelab.
+**Alternativas:** MinIO (S3) en la infraestructura con `use_lockfile`; PostgreSQL en la infraestructura.
 **Por qué:** no necesita infraestructura previa (con MinIO, el estado dependería de una pieza que
 también hay que crear y mantener), tiene historial de versiones del estado y bloqueo nativo.
 **Coste:** el plan Free no tiene tokens de equipo de solo lectura. Ver riesgo aceptado
@@ -99,7 +103,7 @@ también hay que crear y mantener), tiene historial de versiones del estado y bl
 sobre el repo y abren sus PR **desde un fork**. Solo `infra-admins` tiene Maintain/Admin.
 **Alternativas:** rol Write y ramas en el propio repo.
 **Por qué:** con Write, cualquiera podría crear una rama con un workflow modificado (`on: push`) y
-ejecutarlo en los runners del homelab. Con Read no se pueden crear ramas en el repo, y los workflows
+ejecutarlo en los runners de la plataforma. Con Read no se pueden crear ramas en el repo, y los workflows
 de un fork no tienen acceso a nuestros runners ni a nuestros secretos.
 
 ### D-05 · El plan de los PR no ejecuta código del PR — 14-oct-2026
@@ -107,7 +111,7 @@ de un fork no tienen acceso a nuestros runners ni a nuestros secretos.
 **Decisión:** `pr-plan.yml` usa `pull_request_target` (el workflow siempre es el de `main`), hace
 checkout de `main` y aplica encima **solo los ficheros de `requests/`** que cambia el PR, y solo si
 el PR no toca nada más. Los YAML pasan el esquema y `iac check` antes de Terraform.
-**Alternativas:** `pull_request` con el código del PR (lo ejecutaría en el homelab con credenciales);
+**Alternativas:** `pull_request` con el código del PR (lo ejecutaría en la infraestructura con credenciales);
 no hacer plan en los PR (el admin revisaría a ciegas).
 **Por qué:** las peticiones son **datos**, no código. Terraform las lee con `yamldecode`, que no
 ejecuta nada. Un PR que cambia código (Terraform, Ansible, scripts o workflows) no tiene plan
@@ -139,8 +143,8 @@ VMs existentes, solo afecta a las nuevas.
 
 **Decisión:** el disco de cada VM se importa con `import_from` (contenido `import`, por la API) y no
 con `file_id`, que el provider importa por SSH. No hay replicación por `pvesh` sobre SSH (en
-proxmox-iac sí). El provider no tiene bloque `ssh {}`.
-**Alternativas:** dar al pipeline la clave root de los nodos, como en proxmox-iac.
+el diseño anterior sí). El provider no tiene bloque `ssh {}`.
+**Alternativas:** dar al pipeline la clave root de los nodos, como en el diseño anterior.
 **Por qué:** una clave root de los nodos anula cualquier restricción de los tokens. Sin ella, todo lo
 que hace el pipeline pasa por la API y por las ACL de [R-07](seguridad.md#r-07-tokens-de-proxmox-con-privilegios-mínimos).
 **Requisito:** Proxmox VE con soporte del contenido `import` (8.4 o posterior; el provider se prueba
@@ -152,7 +156,7 @@ con 9.x).
 minutos después del apply. Una VM ya conocida tiene que presentar la misma clave que en el deploy
 anterior; solo las VMs que el plan crea o reemplaza pueden traer una nueva. Ansible verifica
 siempre (`StrictHostKeyChecking=yes`, `UserKnownHostsFile` = esas claves).
-**Alternativas:** `host_key_checking = False` (lo que había en proxmox-iac); fijar la clave de host
+**Alternativas:** `host_key_checking = False` (lo que había en el diseño anterior); fijar la clave de host
 desde Terraform con cloud-init (sin TOFU, pero deja claves privadas en el estado, necesita snippets
 de cloud-init y solo sirve para VMs nuevas).
 **Por qué:** cierra la suplantación de una VM existente (un cambio de clave inesperado para el
@@ -192,7 +196,7 @@ Lo que sí está aislado es **qué VMs** son suyas (D-10). Ver [A-3](seguridad.m
 ### D-13 · VPN de los devs con Cloudflare Zero Trust (túnel + WARP) — 15-oct-2026
 
 **Decisión:** los devs llegan a la red de las VMs con el cliente WARP, autenticados con su cuenta de
-GitHub. El tráfico entra al homelab por un túnel `cloudflared` saliente, desde un LXC dedicado, y las
+GitHub. El tráfico entra a la infraestructura por un túnel `cloudflared` saliente, desde un LXC dedicado, y las
 políticas de Gateway lo limitan al `:22` de la red de las VMs. Cómo se monta:
 [bootstrap.md §10](bootstrap.md#10-acceso-de-los-devs-a-las-vms-vpn).
 **Por qué:**
@@ -200,14 +204,14 @@ políticas de Gateway lo limitan al `:22` de la red de las VMs. Cómo se monta:
 - La identidad es la misma cuenta de GitHub de `projects.yaml`.
 - Cada acceso se revoca por persona y por dispositivo, y queda un registro de conexiones.
 - El plan Free cubre hasta 50 usuarios.
-- Es el mismo modelo que ya usamos para el cluster retech.
+- Es un modelo ya probado con otro cluster Proxmox.
 
 **Alternativas:**
 - *Tailscale*: igual de sencillo, pero las ACL de grupo son de pago a partir de cierto tamaño y
   añade otra cuenta más.
 - *WireGuard propio*: exige abrir un puerto en el router, y la gestión de claves por persona es
   manual.
-- *Bastión SSH expuesto*: Internet llega a un SSH del homelab.
+- *Bastión SSH expuesto*: Internet llega a un SSH de la infraestructura.
 
 **Coste:** Cloudflare ve los metadatos (quién se conecta, a qué IP y puerto y cuándo), pero no el
 contenido, porque SSH va cifrado de extremo a extremo. Si Cloudflare cae, no se puede entrar a las
@@ -217,7 +221,7 @@ VMs, aunque las VMs y el pipeline siguen funcionando: los runners no usan el tú
 
 **Decisión:** Proxmox VE copia cada noche todas las VMs y LXC a Proxmox Backup Server 4. El
 datastore de PBS usa como *backend* un bucket del SeaweedFS que ya corre en otra máquina. Las copias
-se cifran en el nodo con una clave que se guarda fuera del homelab. Cómo se monta:
+se cifran en el nodo con una clave que se guarda fuera de la infraestructura. Cómo se monta:
 [bootstrap.md §11](bootstrap.md#11-copias-de-seguridad-proxmox-backup-server-sobre-seaweedfs-s3).
 **Por qué:**
 - Proxmox VE no escribe en S3; PBS sí, desde la versión 4.
@@ -239,14 +243,14 @@ se cifran en el nodo con una clave que se guarda fuera del homelab. Cómo se mon
 - Un datastore S3 solo lo puede usar una instancia de PBS a la vez.
 - Si se pierde la clave de cifrado, las copias no sirven ([A-10](seguridad.md#riesgos-aceptados)).
 
-## Qué viene de proxmox-iac y qué cambia
+## Qué viene del diseño anterior y qué cambia
 
-Este repo deriva de `proxmox-iac`, el repo del cluster retech de i2cat, que sigue igual. Se reutiliza
-la idea y buena parte del código: las peticiones YAML, el catálogo cerrado, las reglas de `iac check`
+Este repo deriva de un diseño GitOps anterior para Proxmox (un proyecto interno, en GitLab). Se
+reutiliza la idea y buena parte del código: las peticiones YAML, el catálogo cerrado, las reglas de `iac check`
 repetidas como `precondition`, el rol `base` de cuentas personales, el inventario generado y la
 vigilancia del despliegue del dataspace. Cambia:
 
-| proxmox-iac | homelab-iac | Por qué |
+| Diseño anterior | pve-platform-iac | Por qué |
 |---|---|---|
 | GitLab CI, estado en GitLab | GitHub Actions, estado en HCP | D-01, D-03 |
 | `team.yaml` (personas con rangos) | `projects.yaml` (proyectos con miembros) | D-10 |
@@ -257,4 +261,4 @@ vigilancia del despliegue del dataspace. Cambia:
 | Imagen `current` | Release fechada + sha256 | D-07 |
 | Token con ACL en `/` | ACL solo en pools, storage, zona y nodos | [R-07](seguridad.md#r-07-tokens-de-proxmox-con-privilegios-mínimos) |
 | SSH root a los nodos (replicación) | Sin SSH a los nodos | D-08 |
-| Escenario de i2cat (GitLab) | MVP de `dataspace-mvp` (GitHub, dsgen) | D-11 |
+| Escenario de dataspace fijo | Perfil extra `dataspace-kind` con un ref fijado | D-11 |

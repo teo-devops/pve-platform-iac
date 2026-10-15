@@ -8,14 +8,15 @@ Qué leer según quién seas.
 |---|---|
 | [inicio-rapido.md](inicio-rapido.md) | De cero a tu primera VM: fork, petición, PR y `make ssh` |
 | [peticiones.md](peticiones.md) | Cada campo de los YAML de `requests/`, perfiles y tamaños |
-| [dataspace.md](dataspace.md) | Pedir un MVP de dataspace, acceder, lanzar las pruebas y qué hacer si falla |
+| [dataspace.md](dataspace.md) | **Extra opcional:** pedir un MVP de dataspace, acceder, lanzar las pruebas y qué hacer si falla |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Normas: qué puedes tocar y cómo |
 
 ## Admin
 
 | Documento | Para |
 |---|---|
-| [bootstrap.md](bootstrap.md) | Montar todo desde cero: organización, ruleset, environments, HCP, runners, Proxmox |
+| [bootstrap.md](bootstrap.md) | Montar todo desde cero: Proxmox (con [platform-proxmox](https://github.com/teo-devops/platform-proxmox)), GitHub, HCP, runners, VPN y copias |
+| [extender.md](extender.md) | Añadir sabores (flavors) y perfiles propios al catálogo |
 | [operador.md](operador.md) | El día a día: revisar PRs, altas y bajas, imagen base y break-glass |
 | [credenciales.md](credenciales.md) | Cada secreto: qué es, dónde vive, alcance y cómo rotarlo |
 | [pipeline.md](pipeline.md) | Cada workflow y job, y cómo depurarlo |
@@ -27,7 +28,7 @@ Qué leer según quién seas.
 | Documento | Para |
 |---|---|
 | [diseno.md](diseno.md) | Cómo funciona y por qué: arquitectura, flujo y decisiones (D-01…D-14) |
-| [seguridad.md](seguridad.md) | Modelo de amenazas, controles (R-01…R-15) y riesgos aceptados (A-1…A-8) |
+| [seguridad.md](seguridad.md) | Modelo de amenazas, controles (R-01…R-15) y riesgos aceptados (A-1…A-12) |
 
 ## Convenciones de esta documentación
 

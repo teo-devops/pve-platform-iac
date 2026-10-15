@@ -12,7 +12,7 @@
 # Aprobacion: el merge del admin ES la aprobacion (ruleset de main: PR + revision
 # de CODEOWNERS). Nadie aplica con credenciales locales salvo break-glass.
 #
-# Runner: `homelab-apply` (grupo de runners restringido a deploy.yml y drift.yml en
+# Runner: `platform-apply` (grupo de runners restringido a deploy.yml y drift.yml en
 # main; docs/bootstrap.md §6). Secretos: environment `production`, que solo
 # despliega desde main (docs/credenciales.md).
 name: deploy
@@ -49,10 +49,14 @@ env:
   NO_COLOR: "1"
   TF_IN_AUTOMATION: "1"
   TF_CLOUD_ORGANIZATION: ${{ vars.TF_CLOUD_ORGANIZATION }}
+  TF_WORKSPACE: ${{ vars.TF_WORKSPACE || 'pve-platform' }}
 
 jobs:
   plan:
-    runs-on: [self-hosted, homelab-apply]
+    # Solo si esta instalacion tiene runners propios (docs/bootstrap.md §6). El
+    # resto de jobs dependen de este y quedan en skipped con el.
+    if: vars.PLATFORM_RUNNERS == 'true'
+    runs-on: [self-hosted, platform-apply]
     environment: production
     timeout-minutes: 30
     outputs:
@@ -100,7 +104,7 @@ jobs:
   apply:
     needs: plan
     if: needs.plan.outputs.changes == 'true'
-    runs-on: [self-hosted, homelab-apply]
+    runs-on: [self-hosted, platform-apply]
     environment: production
     timeout-minutes: 60
     env:
@@ -142,7 +146,7 @@ jobs:
     # Tambien sin cambios de infraestructura: un deploy de solo Ansible (p. ej.
     # cambiar `members`) necesita las claves igual.
     if: always() && needs.plan.result == 'success' && needs.apply.result != 'failure' && needs.apply.result != 'cancelled'
-    runs-on: [self-hosted, homelab-apply]
+    runs-on: [self-hosted, platform-apply]
     timeout-minutes: 15
     permissions:
       contents: read
@@ -187,7 +191,7 @@ jobs:
   configure:
     needs: known-hosts
     if: always() && needs.known-hosts.result == 'success'
-    runs-on: [self-hosted, homelab-apply]
+    runs-on: [self-hosted, platform-apply]
     environment: production
     # Por encima del limite de cada despliegue de MVP (mvp_timeout, 45 min) para que
     # falle el despliegue con su diagnostico y no el job a ciegas.

@@ -16,7 +16,7 @@ de ghcr y la deploy key de dataspace-mvp).
 | Admin (`infra-admins`) | Total | Mergear, gestionar secretos, aplicar en local (break-glass) |
 | Colaborador de la empresa / freelancer | Limitada a su proyecto | Leer el repo, abrir PR desde su fork, entrar por SSH en las VMs de su proyecto |
 | Ex-colaborador | Ninguna | Nada desde el `configure` siguiente a su baja ([operador.md](operador.md#alta-y-baja-de-una-persona)) |
-| Atacante en la red del homelab | Ninguna | Intentar suplantar una VM o un nodo (MITM) |
+| Atacante en la red de la plataforma | Ninguna | Intentar suplantar una VM o un nodo (MITM) |
 | Dependencia comprometida | Ninguna | Una action, un provider o una imagen que cambia de contenido |
 
 **Qué se quiere evitar, por orden:** 1) que código sin revisar se ejecute con credenciales de
@@ -30,14 +30,14 @@ Cada requisito, el control que lo cumple, dónde está y cómo verificarlo.
 
 | # | Requisito | Control | Dónde | Cómo verificarlo |
 |---|---|---|---|---|
-| R-01 | Código no revisado nunca con secretos | Las validaciones de PR corren en runners de GitHub, sin secretos ni red al homelab | `.github/workflows/pr-validate.yml` | Un PR que imprime `env` no ve ningún secreto |
+| R-01 | Código no revisado nunca con secretos | Las validaciones de PR corren en runners de GitHub, sin secretos ni red a la infraestructura | `.github/workflows/pr-validate.yml` | Un PR que imprime `env` no ve ningún secreto |
 | R-02 | Plan de PR sin ejecutar código del PR | `pull_request_target` + checkout de main + solo `requests/` del PR | `.github/workflows/pr-plan.yml` | Un PR que toca `terraform/` no recibe plan; ver abajo |
 | R-03 | TLS verificado con Proxmox | `insecure = false` + CA del cluster en el bundle | `terraform/versions.tf`, `scripts/ca-bundle.sh` | Sin la CA en el bundle, el plan falla con `x509` |
 | R-04 | Ansible verifica las claves de host | `host_key_checking = True`, `StrictHostKeyChecking=yes` y claves publicadas | `ansible/ansible.cfg`, `scripts/iac` (`configure`, `known-hosts`) | Una clave alterada en `known_hosts` hace fallar Ansible |
-| R-05 | Imagen base inmutable | Release fechada + sha256 + firma GPG verificada | `homelab.yaml` (`image:`), `terraform/main.tf`, `scripts/image-pin.sh` | Un sha256 cambiado hace fallar la descarga en Proxmox |
+| R-05 | Imagen base inmutable | Release fechada + sha256 + firma GPG verificada | `platform.yaml` (`image:`), `terraform/main.tf`, `scripts/image-pin.sh` | Un sha256 cambiado hace fallar la descarga en Proxmox |
 | R-06 | Sin credenciales root de los nodos | `import_from` por API, sin `ssh {}` ni replicación por SSH | `terraform/modules/vm/main.tf`, `terraform/versions.tf` | `grep -rn "ssh {" terraform/` no encuentra nada |
 | R-07 | Tokens con privilegios mínimos | ACL solo en pools, storages, zona SDN y nodos; nada en `/` | `scripts/iac` (`proxmox-acl`, `preflight`) | `make preflight` con el token exportado |
-| R-08 | Runners separados y efímeros | Dos grupos (plan/apply) restringidos a workflows de main; un contenedor por job | `runner/`, [bootstrap.md §6](bootstrap.md#6-runners-del-homelab) | Un workflow en otra rama no consigue runner |
+| R-08 | Runners separados y efímeros | Dos grupos (plan/apply) restringidos a workflows de main; un contenedor por job | `runner/`, [bootstrap.md §6](bootstrap.md#6-runners-propios) | Un workflow en otra rama no consigue runner |
 | R-09 | Se aplica exactamente lo planificado | Plan guardado, cifrado entre jobs, sha256 comprobado | `.github/workflows/deploy.yml`, `scripts/encrypt-plan.sh` | Alterar el artefacto hace fallar `apply` |
 | R-10 | Secretos de escritura solo en main | Secretos en el environment `production`, que solo despliega desde `main` | [bootstrap.md §5](bootstrap.md#5-environments-y-secretos) | `make preflight` (sin secretos a nivel de repo) |
 | R-11 | Cadena de suministro del pipeline | Actions fijadas por SHA, `permissions` mínimos, Dependabot con 14 días de espera | `.github/workflows/*`, `.github/dependabot.yml` | Job `workflows` de pr-validate |
@@ -84,7 +84,7 @@ SSH ([R-06](#controles)). Su identidad la garantiza TLS ([R-03](#controles)).
 
 ### R-07 Tokens de Proxmox con privilegios mínimos
 
-`make proxmox-acl` genera los comandos `pveum` desde `homelab.yaml` y `projects.yaml`:
+`make proxmox-acl` genera los comandos `pveum` desde `platform.yaml` y `projects.yaml`:
 
 | Token | Rol | Rutas |
 |---|---|---|
@@ -105,11 +105,13 @@ los dos).
 | A-3 | Los miembros de un proyecto son root en sus VMs (sudo, `docker`), y durante un despliegue de MVP podrían leer el token de ghcr | Son sus máquinas de desarrollo; kind necesita Docker (D-12) | El token es de solo `read:packages` y existe en la VM solo durante el despliegue (R-13) | Una cuenta máquina de GitHub con acceso solo a los paquetes del dataspace, y su token |
 | A-4 | Todos los colaboradores ven las peticiones de todos (nombres, IPs internas, tamaños) | Simplicidad (D-10) | No da acceso: las cuentas SSH son por proyecto | Un repo de peticiones por proyecto |
 | A-5 | El PAT que crea los runners vive en el host de runners | Lo exige la API de runners JIT | Fine-grained, solo «Self-hosted runners», fichero `0600` de root, host sin acceso para nadie salvo admins | Una GitHub App con ese único permiso |
-| A-6 | La restricción de grupos de runners a workflows concretos puede no estar en el plan Team | Depende del plan de GitHub | Aunque falte, los devs no pueden crear ramas (D-04) y los runners son efímeros | Verificarlo al crear los grupos ([bootstrap.md §6](bootstrap.md#6-runners-del-homelab)) |
+| A-6 | (Modelo A) La restricción de grupos de runners a workflows concretos puede no estar en el plan Team | Depende del plan de GitHub | Aunque falte, los devs no pueden crear ramas (D-04) y los runners son efímeros | Verificarlo al crear los grupos ([bootstrap.md §6](bootstrap.md#6-runners-propios)) |
 | A-7 | El plan de PR no ve la deriva (`-refresh=false`) | Refrescar exige `VM.Config.Disk` (un permiso de modificación) | El plan de main sí refresca, y drift.yml lo hace a diario | — |
-| A-8 | Lo que no gestiona el repo (otras VMs del homelab) queda fuera de la deriva | Terraform solo conoce su estado | Las ACL impiden que el token toque VMs fuera de los pools del repo | — |
-| A-9 | Red plana: las VMs de todos los proyectos están en el mismo bridge y se ven entre sí (puertos de servicio incluidos, como la API de k3s o el MVP) | Simplicidad del homelab: un solo bridge y una sola red | Las cuentas SSH son por proyecto (D-10); Cloudflare Gateway solo deja llegar al `:22`, y opcionalmente solo al rango del propio proyecto ([bootstrap.md §10](bootstrap.md#10-acceso-de-los-devs-a-las-vms-vpn), D-13) | Firewall de Proxmox con un grupo de seguridad por proyecto, o una VLAN o zona SDN por proyecto |
-| A-10 | Si se pierde la clave de cifrado de las copias, no se puede restaurar ninguna | Es el precio de que ni PBS ni SeaweedFS vean los datos en claro (D-14) | Copia de la clave fuera del homelab, en el gestor de contraseñas, en cuanto se crea ([credenciales.md](credenciales.md#copias-de-seguridad)); restauración de prueba mensual | Una segunda clave maestra RSA de PBS (`proxmox-backup-client key create-master-key`) guardada en otro sitio |
+| A-8 | Lo que no gestiona el repo (otras VMs de la plataforma) queda fuera de la deriva | Terraform solo conoce su estado | Las ACL impiden que el token toque VMs fuera de los pools del repo | — |
+| A-9 | Red plana: las VMs de todos los proyectos están en el mismo bridge y se ven entre sí (puertos de servicio incluidos, como la API de k3s o el MVP) | Simplicidad de la infraestructura: un solo bridge y una sola red | Las cuentas SSH son por proyecto (D-10); Cloudflare Gateway solo deja llegar al `:22`, y opcionalmente solo al rango del propio proyecto ([bootstrap.md §10](bootstrap.md#10-acceso-de-los-devs-a-las-vms-vpn), D-13) | Firewall de Proxmox con un grupo de seguridad por proyecto, o una VLAN o zona SDN por proyecto |
+| A-10 | Si se pierde la clave de cifrado de las copias, no se puede restaurar ninguna | Es el precio de que ni PBS ni SeaweedFS vean los datos en claro (D-14) | Copia de la clave fuera de la infraestructura, en el gestor de contraseñas, en cuanto se crea ([credenciales.md](credenciales.md#copias-de-seguridad)); restauración de prueba mensual | Una segunda clave maestra RSA de PBS (`proxmox-backup-client key create-master-key`) guardada en otro sitio |
+| A-11 | Runners propios en un **repo público** de cuenta personal (modelo B de D-01): sin grupos limitados a workflows | Equipo pequeño sin organización; GitHub los desaconseja en repos públicos | Opt-in `PLATFORM_RUNNERS`; los jobs con runner propio solo salen de `main` (ruleset, sin bypass) o de `pr-plan` con la etiqueta `plan` que pone un admin, y un push nuevo la quita; ningún colaborador salvo los admins; aprobación obligatoria de los workflows de fuera; runners efímeros sin `docker.sock` y con cortafuegos (R-08) | Organización con grupos de runners (modelo A) |
+| A-12 | En un repo público, la configuración de la instancia es pública: nodos, IPs internas, rangos, usuarios de GitHub y peticiones | Es GitOps: la fuente de verdad es el repo | Nada de eso da acceso: la red solo se alcanza por la VPN (D-13), las cuentas son por clave SSH y las claves públicas ya son públicas en `github.com/<usuario>.keys`; ningún secreto vive en el repo (R-10) | Repo privado en una organización (modelo A) |
 
 ## Qué hacer si…
 

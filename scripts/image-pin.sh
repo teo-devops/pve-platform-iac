@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# image-pin.sh — fija la imagen base (bloque `image:` de homelab.yaml) a una release
+# image-pin.sh — fija la imagen base (bloque `image:` de platform.yaml) a una release
 # FECHADA de Ubuntu 24.04, con su sha256 verificado por la firma GPG de Canonical.
 #
 #   scripts/image-pin.sh             # la ultima release
@@ -8,7 +8,7 @@
 # Pasos: baja SHA256SUMS y SHA256SUMS.gpg de la release, verifica la firma con la
 # clave de imagenes de Ubuntu (huella fijada abajo; si la clave cambia, este script
 # falla y hay que revisar el cambio a mano), saca el sha256 de la imagen y
-# reescribe homelab.yaml. El cambio se sube por PR como cualquier otro.
+# reescribe platform.yaml. El cambio se sube por PR como cualquier otro.
 #
 # Cambiar la imagen NO recrea las VMs existentes (ignore_changes en modules/vm):
 # solo las nuevas arrancan de la nueva. Detalle: docs/operador.md -> "Subir la imagen base".
@@ -38,7 +38,7 @@ gpg --batch --status-fd 1 --verify "$W/SHA256SUMS.gpg" "$W/SHA256SUMS" 2>/dev/nu
 SHA=$(awk -v f="*$IMG" '$2 == f {print $1}' "$W/SHA256SUMS")
 [[ "$SHA" =~ ^[0-9a-f]{64}$ ]] || { echo "No encuentro $IMG en SHA256SUMS de release-$REL" >&2; exit 1; }
 
-python3 - "$ROOT/homelab.yaml" "$REL" "$BASE/release-$REL/$IMG" "$SHA" "$FPR" <<'PY'
+python3 - "$ROOT/platform.yaml" "$REL" "$BASE/release-$REL/$IMG" "$SHA" "$FPR" <<'PY'
 import re, sys, datetime
 path, rel, url, sha, fpr = sys.argv[1:]
 s = open(path).read()
@@ -47,8 +47,8 @@ block = (f'image:\n  release: "{rel}"\n  url: {url}\n  sha256: {sha}\n'
          f'  # {fpr} (UEC Image Automatic Signing Key).\n')
 new, n = re.subn(r"(?ms)^image:\n(?:  .*\n)+", block, s)
 if n != 1:
-    sys.exit("No encuentro el bloque image: de homelab.yaml")
+    sys.exit("No encuentro el bloque image: de platform.yaml")
 open(path, "w").write(new)
 PY
-echo "homelab.yaml -> release-$REL  sha256 $SHA  (firma verificada con $FPR)"
+echo "platform.yaml -> release-$REL  sha256 $SHA  (firma verificada con $FPR)"
 echo "Siguiente: PR con el cambio. El plan debe reemplazar SOLO proxmox_download_file.base_image."

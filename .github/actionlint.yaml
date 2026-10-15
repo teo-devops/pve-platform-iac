@@ -1,5 +1,5 @@
-# actionlint: etiquetas de los runners propios del homelab (runner/README.md).
+# actionlint: etiquetas de los runners propios de la plataforma (runner/README.md).
 self-hosted-runner:
   labels:
-    - homelab-plan
-    - homelab-apply
+    - platform-plan
+    - platform-apply

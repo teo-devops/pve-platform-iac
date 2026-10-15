@@ -14,10 +14,14 @@ Puesta en marcha desde cero: [bootstrap.md](bootstrap.md).
 1. **¿Quién lo pide y para qué proyecto?** El autor tiene que ser miembro del `project` de la
    petición (`projects.yaml`). Si pide para un proyecto ajeno, se rechaza.
 2. **¿Qué toca?**
+   - Solo `requests/` y el autor es de **fuera** (fork sin rol, en un repo público): `pr-plan` no
+     planifica solo. Lee el YAML y, si es razonable, ponle la etiqueta **`plan`**
+     (`gh pr edit <n> --add-label plan`). Si el autor hace otro push, la etiqueta desaparece y hay
+     que volver a revisarlo.
    - Solo `requests/`: `pr-plan` ha comentado el plan. Comprueba que crea o cambia lo que dice el PR
      y que **no destruye ni recrea** nada que no se haya borrado o renombrado a propósito (el
      comentario lo marca en negrita, con un aviso).
-   - Algo más (Terraform, Ansible, scripts, workflows, `projects.yaml`, `homelab.yaml`): no hay plan
+   - Algo más (Terraform, Ansible, scripts, workflows, `projects.yaml`, `platform.yaml`): no hay plan
      automático, por diseño ([D-05](diseno.md#decisiones)). Lee el diff entero; si cambia
      infraestructura, haz el plan en local (`make plan`, abajo) o divide el PR.
    - Un PR que cambia `.github/` es el más delicado: puede cambiar qué código corre con secretos
@@ -41,8 +45,9 @@ Puesta en marcha desde cero: [bootstrap.md](bootstrap.md).
 
 ## Alta y baja de una persona
 
-- **Alta:** añade la organización (equipo `colaboradores`, rol Read en el repo) y su usuario de
-  GitHub a `members` del proyecto (PR). Comprueba que su perfil tiene una clave SSH
+- **Alta:** añade su usuario de GitHub a `members` del proyecto (PR). Con organización (modelo A),
+  añádelo también al equipo `colaboradores` (rol Read en el repo). Con un repo público (modelo B),
+  **no** lo hagas colaborador: trabaja con un fork ([D-01](diseno.md#decisiones)). Comprueba que su perfil tiene una clave SSH
   (`curl https://github.com/<usuario>.keys`): sin clave, el `configure` falla avisando.
 
   ```sh
@@ -52,7 +57,7 @@ Puesta en marcha desde cero: [bootstrap.md](bootstrap.md).
   o la de su proyecto ([bootstrap.md §10](bootstrap.md#10-acceso-de-los-devs-a-las-vms-vpn)).
 - **Baja:** quítalo de `members` (PR y merge). En el `configure` de ese deploy, el rol `base` borra
   su cuenta en todas las VMs (su `home` se queda, por si hay algo que recuperar). Después,
-  sácalo de la organización:
+  sácalo de la organización (solo con el modelo A):
 
   ```sh
   gh api -X DELETE orgs/<ORG>/memberships/<usuario>
@@ -105,7 +110,7 @@ entrando con la cuenta personal si ya has añadido la clave nueva en GitHub.
 
 ```sh
 make image-pin            # la última release (o REL=AAAAMMDD)
-git diff homelab.yaml     # release, url y sha256 nuevos; firma verificada
+git diff platform.yaml     # release, url y sha256 nuevos; firma verificada
 ```
 
 PR. El plan tiene que **reemplazar solo** `proxmox_download_file.base_image[...]`, con **0 VMs**
@@ -140,7 +145,7 @@ read -rs TF_VAR_pm_api_token && export TF_VAR_pm_api_token      # iac@pve!apply
 make plan        # check + plan + resumen; guarda terraform/tfplan
 make apply       # aplica ESE plan; pide escribir 'aplicar' (o 'destruir')
 make known-hosts SCAN=1      # claves de host (TOFU desde tu maquina: compara las huellas)
-make configure KNOWN_HOSTS=~/.ssh/known_hosts.homelab-iac   # Ansible; credenciales del MVP en credenciales.md
+make configure KNOWN_HOSTS=~/.ssh/known_hosts.pve-platform-iac   # Ansible; credenciales del MVP en credenciales.md
 ```
 
 Después: un PR que deje `main` igual que lo aplicado (si no, el siguiente drift lo marcará como

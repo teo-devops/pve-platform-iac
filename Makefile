@@ -6,14 +6,14 @@
 
 IAC := ./scripts/iac
 .DEFAULT_GOAL := help
-.PHONY: help setup doctor flavors new-vm new-cluster check list remove plan apply configure \
+.PHONY: help init setup doctor flavors new-vm new-cluster check list remove plan apply configure \
         ssh tunnel kubeconfig known-hosts fmt validate lint docs preflight proxmox-acl image-pin
 
 # Argumentos opcionales -> flags del CLI, solo si se han pasado.
 opt = $(if $($(1)),--$(2) "$($(1))")
 
 help: ## Esta ayuda
-	@echo "homelab-iac — pide VMs y clusters en el Proxmox del homelab sin tocar Terraform"
+	@echo "pve-platform-iac — pide VMs y clusters en el Proxmox de la plataforma sin tocar Terraform"
 	@echo
 	@echo "PRIMERA VEZ  (docs/inicio-rapido.md)"
 	@echo "  make setup                 comprueba lo minimo (python3, PyYAML, ssh)"
@@ -34,6 +34,7 @@ help: ## Esta ayuda
 	@echo "  make known-hosts           claves de host publicadas por el pipeline (SCAN=1: leerlas tu)"
 	@echo
 	@echo "ADMIN  (docs/operador.md; aplicar en local es break-glass: lo normal es el pipeline)"
+	@echo "  make init OWNER=@x         nueva instalacion desde la plantilla (config de examples/)"
 	@echo "  make preflight             comprueba la configuracion externa (GitHub, HCP, Proxmox, CA)"
 	@echo "  make proxmox-acl           comandos pveum de tokens, pools y ACL (sin nada en /)"
 	@echo "  make image-pin [REL=x]     fija la imagen base a una release verificada por GPG"
@@ -109,6 +110,9 @@ lint: ## Lo mismo que pr-validate, sin docker
 
 docs:
 	@$(IAC) flavors --docs
+
+init: ## Nueva instalacion desde la plantilla (OWNER=@usuario o @org/equipo)
+	@$(IAC) init $(call opt,OWNER,owner) $(if $(FORCE),--force)
 
 preflight:
 	@$(IAC) preflight

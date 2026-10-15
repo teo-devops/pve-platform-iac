@@ -21,6 +21,6 @@ for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /et
 done
 [ -n "$SYS" ] || { echo "No encuentro el bundle de CA del sistema (¿falta el paquete ca-certificates?)." >&2; exit 1; }
 
-OUT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/homelab-iac-ca-bundle.pem"
+OUT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/pve-platform-iac-ca-bundle.pem"
 cat "$SYS" "$CA" > "$OUT"
 echo "$OUT"

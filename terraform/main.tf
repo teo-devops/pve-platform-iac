@@ -6,7 +6,7 @@
 # Imagen base, una copia por nodo (sin almacenamiento compartido asumido).
 #
 # INMUTABLE (docs/seguridad.md, R-05): URL de una release FECHADA y su sha256
-# exacto, de homelab.yaml. Proxmox comprueba el checksum al descargar y falla si no
+# exacto, de platform.yaml. Proxmox comprueba el checksum al descargar y falla si no
 # coincide. `make image-pin` cambia la release verificando la firma de SHA256SUMS.
 #
 # content_type = "import" + extension .qcow2: el disco de la VM se importa con

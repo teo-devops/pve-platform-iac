@@ -38,11 +38,13 @@ REQ_VMS = os.path.join(ROOT, "requests", "vms")
 PLAN_FILE = os.path.join(TF_DIR, "tfplan")
 CA_FILE = os.path.join(TF_DIR, "certs", "pve-root-ca.pem")
 GITHUB_URL = "https://github.com"
+# Workspace de HCP (terraform/backend.tf no lo fija): el mismo por defecto que en CI.
+os.environ.setdefault("TF_WORKSPACE", "pve-platform")
 # Claves de host de las VMs que publica el job `known-hosts` del pipeline. ssh,
 # tunnel y kubeconfig las usan EN LUGAR de ~/.ssh/known_hosts: una VM recreada
 # con la misma IP no da el aviso de "HOST IDENTIFICATION HAS CHANGED" (la clave
 # nueva ya esta aqui), y una suplantacion si.
-KNOWN_HOSTS = os.path.expanduser(os.environ.get("IAC_KNOWN_HOSTS", "~/.ssh/known_hosts.homelab-iac"))
+KNOWN_HOSTS = os.path.expanduser(os.environ.get("IAC_KNOWN_HOSTS", "~/.ssh/known_hosts.pve-platform-iac"))
 KNOWN_HOSTS_ARTIFACT, KNOWN_HOSTS_MAX_AGE = "known_hosts", 600
 
 NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,40}[a-z0-9])?$")
@@ -94,7 +96,7 @@ def load_yaml(path):
 
 
 def load_all():
-    platform = load_yaml(os.path.join(ROOT, "homelab.yaml"))
+    platform = load_yaml(os.path.join(ROOT, "platform.yaml"))
     people = load_yaml(os.path.join(ROOT, "projects.yaml"))
     catalog = load_yaml(os.path.join(ROOT, "catalog", "flavors.yaml"))
     profiles = load_yaml(os.path.join(ROOT, "catalog", "profiles.yaml"))
@@ -440,6 +442,13 @@ def fmt_res(f):
 def cmd_check(args):
     platform, people, catalog, profiles, clusters, vms = load_all()
     errs, warns = validate(platform, people, catalog, profiles, clusters, vms)
+    # El esquema (lo usa el CI y el editor) tiene que conocer los mismos perfiles que el
+    # catalogo: al añadir uno (docs/extender.md) es facil olvidarse de uno de los dos.
+    vm_schema = json.load(open(os.path.join(ROOT, "schema", "vm.schema.json")))
+    enum = set(vm_schema["properties"]["profile"].get("enum", []))
+    if enum != set(profiles.get("vm_profiles") or {}):
+        errs.append(f"schema/vm.schema.json (profile.enum = {sorted(enum)}) no coincide con "
+                    f"catalog/profiles.yaml (vm_profiles = {sorted(profiles.get('vm_profiles') or {})})")
     for w in warns:
         print(yellow("! ") + w)
     for e in errs:
@@ -655,7 +664,7 @@ def cmd_new_cluster(args):
 
 def write_request(path, lines, args, summary):
     print("\n" + bold("Resumen: ") + summary)
-    warn_box(["Esto consume capacidad COMPARTIDA del homelab. Pide lo que vayas a usar",
+    warn_box(["Esto consume capacidad COMPARTIDA de la plataforma. Pide lo que vayas a usar",
               "y borralo (`make remove NAME=...`) cuando termines."])
     if not args.yes and not confirm("¿Escribo la peticion?", True):
         die("Cancelado, no se ha escrito nada.", 0)
@@ -763,7 +772,7 @@ def cmd_doctor(args):
     first_ip = next(iter(platform["proxmox"]["nodes"].values()))
     line(port_open("github.com", 443), "github.com:443")
     if not is_todo(first_ip):
-        line(port_open(first_ip, 22) or None, f"red del homelab ({first_ip})", "para make ssh / tunnel hace falta VPN al homelab")
+        line(port_open(first_ip, 22) or None, f"red de la plataforma ({first_ip})", "para make ssh / tunnel hace falta VPN a la red interna")
 
     if me and me in (people.get("admins") or {}):
         print(bold("Admin: plan/apply en local (break-glass)"))
@@ -902,7 +911,14 @@ def cmd_apply(args):
 
 # --- ansible ------------------------------------------------------------------
 
+# Orden de los playbooks conocidos. Los de un perfil nuevo (docs/extender.md) van
+# despues, en orden alfabetico: nunca se descartan.
 PLAYBOOK_ORDER = ["site", "k3s", "monitoring", "dataspace-kind"]
+
+
+def order_playbooks(books):
+    books = set(books)
+    return [b for b in PLAYBOOK_ORDER if b in books] + sorted(books - set(PLAYBOOK_ORDER))
 
 
 def cmd_configure(args):
@@ -929,8 +945,8 @@ def cmd_configure(args):
             used |= set(profiles["cluster_profiles"][cluster_profile(profiles, c["flavor_size"])]["playbooks"])
         for v in vms.values():
             used |= set(profiles["vm_profiles"][v.get("profile", "vm")]["playbooks"])
-        books, limit = [b for b in PLAYBOOK_ORDER if b in used], None
-    books = [b for b in PLAYBOOK_ORDER if b in books]
+        books, limit = used, None
+    books = order_playbooks(books)
     env = dict(os.environ)
     # Verificacion estricta contra las claves publicadas, nunca ~/.ssh/known_hosts.
     env["ANSIBLE_HOST_KEY_CHECKING"] = "True"
@@ -1237,11 +1253,11 @@ def cmd_proxmox_acl(args):
     pools = [(p or {}).get("pool") for p in (people.get("projects") or {}).values() if (p or {}).get("pool")]
     paths = ([f"/pool/{p}" for p in pools] + [f"/storage/{px['datastore']}", f"/storage/{px['image_datastore']}",
              f"/sdn/zones/{px.get('sdn_zone', 'localnetwork')}"] + [f"/nodes/{n}" for n in px["nodes"]])
-    print("# Generado por `make proxmox-acl` desde homelab.yaml + projects.yaml. Ejecutar como root en un nodo.")
+    print("# Generado por `make proxmox-acl` desde platform.yaml + projects.yaml. Ejecutar como root en un nodo.")
     print("# Idempotente: se puede repetir tras dar de alta un proyecto. Detalle: docs/credenciales.md")
     print("set -e")
     print(f"pveum role add IaCApply -privs '{APPLY_PRIVS}' 2>/dev/null || pveum role modify IaCApply -privs '{APPLY_PRIVS}'")
-    print("pveum user add iac@pve -comment 'homelab-iac (solo tokens, sin password)' 2>/dev/null || true")
+    print("pveum user add iac@pve -comment 'pve-platform-iac (solo tokens, sin password)' 2>/dev/null || true")
     for p in pools:
         print(f"pveum pool add {p} 2>/dev/null || true")
     print("# Tokens con privsep=1: sus permisos son SOLO las ACL de abajo, no los del usuario.")
@@ -1254,10 +1270,41 @@ def cmd_proxmox_acl(args):
     print("if pveum acl list --output-format json | grep -q '\"path\":\"/\",[^}]*iac@pve'; then echo 'FALLO: hay ACL en /'; else echo 'OK: sin ACL en /'; fi")
 
 
+def cmd_init(args):
+    """Convierte una copia de la plantilla en una instalacion propia (docs/bootstrap.md §1)."""
+    owner = args.owner.strip()
+    if not re.fullmatch(r"@[A-Za-z0-9][A-Za-z0-9-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?", owner):
+        die(f"--owner tiene que ser @usuario o @organizacion/equipo (no '{owner}').")
+    reqs = sorted(glob.glob(os.path.join(REQ_VMS, "*.yaml")) + glob.glob(os.path.join(REQ_CLUSTERS, "*.yaml")))
+    if reqs and not args.force:
+        die(f"requests/ tiene {len(reqs)} peticion(es): esto ya parece una instalacion en uso. "
+            "init las borraria (y el siguiente deploy destruiria sus VMs). Si es lo que quieres: --force.")
+    ex = os.path.join(ROOT, "examples")
+    for f in ("platform.yaml", "projects.yaml"):
+        shutil.copyfile(os.path.join(ex, f), os.path.join(ROOT, f))
+        print(green("✓ ") + f"{f} <- examples/{f}")
+    for r in reqs:
+        os.remove(r)
+    if reqs:
+        print(green("✓ ") + f"requests/: {len(reqs)} peticion(es) borradas")
+    co = os.path.join(ROOT, ".github", "CODEOWNERS")
+    lines = []
+    for l in open(co):
+        if l.strip() and not l.lstrip().startswith("#"):
+            l = re.sub(r"@\S+", owner, l)
+        lines.append(l)
+    open(co, "w").writelines(lines)
+    print(green("✓ ") + f".github/CODEOWNERS -> {owner}")
+    print()
+    print("Siguiente: rellena los TODO de platform.yaml y projects.yaml (docs/bootstrap.md §2),")
+    print("`make check`, y sigue docs/bootstrap.md. `make preflight` lista lo que falta.")
+
+
 def cmd_preflight(args):
     """Comprueba que la configuracion externa (docs/bootstrap.md) esta hecha."""
-    platform, people, *_ = load_all()
+    platform, people, _catalog, _profiles, _clusters, vms = load_all()
     fails = []
+    uses_dataspace = any((v or {}).get("profile") == "dataspace-kind" for v in vms.values())
 
     def line(good, msg, fix=""):
         print(f"  {green('✓') if good else (yellow('!') if good is None else red('✗'))} {msg}"
@@ -1267,11 +1314,11 @@ def cmd_preflight(args):
 
     print(bold("Ficheros del repo"))
     todos = []
-    for fname in ("homelab.yaml", "projects.yaml"):
+    for fname in ("platform.yaml", "projects.yaml"):
         for n, l in enumerate(open(os.path.join(ROOT, fname)), 1):
             if "TODO" in l.split("#")[0]:
                 todos.append(f"{fname}:{n}")
-    line(not todos, "sin valores TODO en homelab.yaml / projects.yaml", ", ".join(todos[:6]) + (" ..." if len(todos) > 6 else ""))
+    line(not todos, "sin valores TODO en platform.yaml / projects.yaml", ", ".join(todos[:6]) + (" ..." if len(todos) > 6 else ""))
     ca_ok = os.path.exists(CA_FILE) and "BEGIN CERTIFICATE" in open(CA_FILE).read()
     line(ca_ok, "terraform/certs/pve-root-ca.pem", "docs/bootstrap.md §3: copia /etc/pve/pve-root-ca.pem de un nodo")
 
@@ -1313,9 +1360,15 @@ def cmd_preflight(args):
             r = subprocess.run(["gh", "api", path], capture_output=True, text=True)
             return json.loads(r.stdout) if r.returncode == 0 else None
         info = gh(f"repos/{repo}") or {}
-        line(info.get("owner", {}).get("type") == "Organization", f"{repo} es de una organizacion",
-             "docs/bootstrap.md §1 (roles y grupos de runners necesitan una organizacion)")
-        line(info.get("private") is True, "repo privado")
+        # Organizacion o cuenta personal: las dos valen (docs/bootstrap.md §1). Con cuenta
+        # personal no hay grupos de runners restringidos a workflows (A-6, A-11).
+        org = info.get("owner", {}).get("type") == "Organization"
+        line(org or None, f"{repo} es de una organizacion" if org else f"{repo} es de una cuenta personal (valido; sin grupos de runners)")
+        if info.get("private") is False:
+            line(None, "repo publico: colaboradores solo admins y aprobacion de forks (docs/bootstrap.md §1, A-11)")
+        vars_ = {v["name"]: v.get("value") for v in (gh(f"repos/{repo}/actions/variables") or {}).get("variables", [])}
+        line(vars_.get("PLATFORM_RUNNERS") == "true" or None, "jobs con runners propios activados (PLATFORM_RUNNERS=true)",
+             "runner/README.md: activalo cuando los runners esten en marcha")
         rules = gh(f"repos/{repo}/rules/branches/main") or []
         kinds = {r.get("type") for r in rules}
         line("pull_request" in kinds, "ruleset en main: PR obligatorio", "docs/bootstrap.md §4")
@@ -1329,9 +1382,12 @@ def cmd_preflight(args):
             line(bool(pol.get("custom_branch_policies") or pol.get("protected_branches")),
                  "production solo despliega desde main", "Environments -> production -> Deployment branches: main")
             sec = {s["name"] for s in (gh(f"repos/{repo}/environments/production/secrets") or {}).get("secrets", [])}
-            for s in ("PM_APPLY_TOKEN", "TF_API_TOKEN", "ANSIBLE_SSH_KEY", "PLAN_ENC_KEY",
-                      "GHCR_READ_TOKEN", "DATASPACE_MVP_DEPLOY_KEY"):
+            for s in ("PM_APPLY_TOKEN", "TF_API_TOKEN", "ANSIBLE_SSH_KEY", "PLAN_ENC_KEY"):
                 line(s in sec, f"secreto production/{s}", "docs/credenciales.md")
+            # Extra dataspace-kind: solo si hay peticiones de ese perfil (docs/dataspace.md).
+            for s in ("GHCR_READ_TOKEN", "DATASPACE_MVP_DEPLOY_KEY"):
+                line((s in sec) or (None if not uses_dataspace else False),
+                     f"secreto production/{s} (extra dataspace-kind)", "docs/dataspace.md")
         if "plan" in envs:
             sec = {s["name"] for s in (gh(f"repos/{repo}/environments/plan/secrets") or {}).get("secrets", [])}
             for s in ("PM_PLAN_TOKEN", "TF_API_TOKEN"):
@@ -1412,6 +1468,10 @@ def main():
         s.add_argument("name")
         s.set_defaults(f=fn)
 
+    s = sub.add_parser("init", help="(admin) nueva instalacion desde la plantilla: config de examples/ y CODEOWNERS")
+    s.add_argument("--owner", required=True, help="@usuario o @organizacion/equipo que aprueba los cambios")
+    s.add_argument("--force", action="store_true", help="aunque requests/ tenga peticiones (las borra)")
+    s.set_defaults(f=cmd_init)
     sub.add_parser("proxmox-acl", help="(admin) comandos pveum de tokens, pools y ACL").set_defaults(f=cmd_proxmox_acl)
     sub.add_parser("preflight", help="(admin) comprueba la configuracion externa").set_defaults(f=cmd_preflight)
 

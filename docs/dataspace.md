@@ -1,6 +1,12 @@
-# Dataspaces en el homelab (perfil `dataspace-kind`)
+# Extra: dataspaces (perfil `dataspace-kind`)
 
-**Para quién:** quien quiera un MVP de dataspace corriendo en una VM del homelab: miembros del
+> [!NOTE]
+> **Perfil opcional.** Es un ejemplo de perfil con una carga propia: despliega MVP de dataspace
+> (Eclipse EDC) generados con dsgen. Depende de un repo y de imágenes **privadas**
+> (`teo-devops/dataspace-mvp`), así que fuera de esa instancia solo sirve como referencia para
+> escribir tu propio perfil ([extender.md](extender.md)). Si no lo usas, bórralo del catálogo.
+
+**Para quién:** quien quiera un MVP de dataspace corriendo en una VM de la infraestructura: miembros del
 proyecto `dataspace` y el admin.
 
 **Qué necesitas antes de empezar:** estar en un proyecto con rango libre (`make doctor`) y saber qué
@@ -118,7 +124,7 @@ cola del log). Lo más habitual:
 
 | Síntoma | Causa probable | Qué hacer |
 |---|---|---|
-| «La VM no alcanza ghcr.io…» | DNS o salida a Internet de la VM | Revisa `network.dns` y el gateway en `homelab.yaml` |
+| «La VM no alcanza ghcr.io…» | DNS o salida a Internet de la VM | Revisa `network.dns` y el gateway en `platform.yaml` |
 | `ImagePullBackOff` en `ghcr.io/teo-devops/*` | Token de ghcr caducado o sin `read:packages` | Rota `GHCR_READ_TOKEN` ([credenciales.md](credenciales.md#credenciales-del-mvp-de-dataspace)) |
 | «Permission denied (publickey)» al clonar | La deploy key no está en `dataspace-mvp` o se ha rotado | `gh repo deploy-key list -R teo-devops/dataspace-mvp` |
 | «… no tiene `<path>`/scripts/herramientas/mvp.env» | `mvp.path` no es una carpeta de MVP en ese ref | Corrige `path` o `ref` |

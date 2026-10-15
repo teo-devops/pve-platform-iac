@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://homelab-iac/schema/vm.schema.json",
+  "$id": "https://pve-platform-iac/schema/vm.schema.json",
   "title": "Peticion de VM suelta (requests/vms/<nombre>.yaml)",
   "description": "Estructura. Las reglas que dependen de otros ficheros (rangos del proyecto, flavor admitido por el perfil, duplicados) las comprueba `scripts/iac check`. Referencia: docs/peticiones.md",
   "type": "object",

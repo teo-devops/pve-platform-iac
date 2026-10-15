@@ -10,7 +10,7 @@
 # NO CORRIGE NADA. Decide el admin: revertir el cambio manual o llevarlo a Git
 # (docs/runbooks/deriva-detectada.md). -lock=false: solo lee.
 #
-# Mismo runner y secretos que deploy (homelab-apply, environment production):
+# Mismo runner y secretos que deploy (platform-apply, environment production):
 # refrescar una VM exige VM.Config.Disk, que el token de plan no tiene.
 name: drift
 
@@ -35,10 +35,12 @@ env:
   NO_COLOR: "1"
   TF_IN_AUTOMATION: "1"
   TF_CLOUD_ORGANIZATION: ${{ vars.TF_CLOUD_ORGANIZATION }}
+  TF_WORKSPACE: ${{ vars.TF_WORKSPACE || 'pve-platform' }}
 
 jobs:
   drift:
-    runs-on: [self-hosted, homelab-apply]
+    if: vars.PLATFORM_RUNNERS == 'true'   # solo con runners propios (bootstrap §6)
+    runs-on: [self-hosted, platform-apply]
     environment: production
     timeout-minutes: 20
     permissions:

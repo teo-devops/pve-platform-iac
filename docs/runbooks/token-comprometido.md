@@ -20,7 +20,7 @@ que no debía ha tenido acceso, o hay algo inexplicable (un plan alterado, VMs q
 | Cuenta de GitHub de un admin | Sácala de `infra-admins` y de la organización |
 
 Si sospechas del pipeline (plan alterado, workflow cambiado): desactiva los workflows mientras
-investigas (`gh workflow disable deploy.yml -R <ORG>/homelab-iac`, y lo mismo con drift y pr-plan).
+investigas (`gh workflow disable deploy.yml -R <ORG>/pve-platform-iac`, y lo mismo con drift y pr-plan).
 
 ## 2. Investigar
 

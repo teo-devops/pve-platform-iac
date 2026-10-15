@@ -1,7 +1,7 @@
 # requests.tf — de donde sale lo que Terraform crea, y la segunda barrera de validacion.
 #
 # Fuentes (todas versionadas, nada de variables):
-#   homelab.yaml           plataforma: nodos, red, imagen
+#   platform.yaml           plataforma: nodos, red, imagen
 #   projects.yaml          admins, cuentas de servicio y proyectos (pool, rangos, miembros)
 #   catalog/*.yaml         flavors y perfiles
 #   requests/vms/*.yaml    una VM suelta por fichero
@@ -18,7 +18,7 @@
 locals {
   repo_root = "${path.root}/.."
 
-  platform = yamldecode(file("${local.repo_root}/homelab.yaml"))
+  platform = yamldecode(file("${local.repo_root}/platform.yaml"))
   people   = yamldecode(file("${local.repo_root}/projects.yaml"))
   catalog  = yamldecode(file("${local.repo_root}/catalog/flavors.yaml"))
   profiles = yamldecode(file("${local.repo_root}/catalog/profiles.yaml"))
@@ -162,7 +162,7 @@ output "requests" {
   }
   precondition {
     condition     = length(local.reserved_hits) == 0
-    error_message = "IP reservada (homelab.yaml network.reserved_ips): ${join(", ", local.reserved_hits)}."
+    error_message = "IP reservada (platform.yaml network.reserved_ips): ${join(", ", local.reserved_hits)}."
   }
   precondition {
     condition     = length(local.vmid_out_of_range) == 0

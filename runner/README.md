@@ -1,21 +1,21 @@
-# Runners del homelab
+# Runners propios
 
 **Para quién:** el admin, al montar o reconstruir el host de runners.
-**Qué necesitas antes:** los grupos de runners creados ([docs/bootstrap.md §6](../docs/bootstrap.md#6-runners-del-homelab)),
-un host Debian/Ubuntu en el homelab (LXC privilegiado con nesting, o VM) con Docker, y acceso root.
-**Cómo sabrás que ha salido bien:** `systemctl status 'homelab-runner@*'` activo, y un PR de prueba
+**Qué necesitas antes:** los grupos de runners creados ([docs/bootstrap.md §6](../docs/bootstrap.md#6-runners-propios)),
+un host Debian/Ubuntu en la infraestructura (LXC privilegiado con nesting, o VM) con Docker, y acceso root.
+**Cómo sabrás que ha salido bien:** `systemctl status 'platform-runner@*'` activo, y un PR de prueba
 recibe su comentario de `pr-plan`.
 
 ## Cómo funciona
 
 `supervisor.sh <tipo>` en bucle: pide a GitHub una configuración **JIT** (un runner de un solo uso,
-ya asignado a su grupo y con la etiqueta `homelab-plan` o `homelab-apply`), arranca un contenedor
+ya asignado a su grupo y con la etiqueta `platform-plan` o `platform-apply`), arranca un contenedor
 nuevo con ella, el contenedor coge **un** job y, al terminar, se destruye
 ([D-02](../docs/diseno.md#decisiones), [R-08](../docs/seguridad.md#controles)).
 
 ```
-systemd ─► homelab-runner@plan  ─► supervisor.sh plan  ─► docker run (red homelab-plan)  ─► 1 job ─► fuera
-        └► homelab-runner@apply ─► supervisor.sh apply ─► docker run (red homelab-apply) ─► 1 job ─► fuera
+systemd ─► platform-runner@plan  ─► supervisor.sh plan  ─► docker run (red platform-plan)  ─► 1 job ─► fuera
+        └► platform-runner@apply ─► supervisor.sh apply ─► docker run (red platform-apply) ─► 1 job ─► fuera
 ```
 
 Los contenedores no montan `docker.sock`, no tienen privilegios (`no-new-privileges`) y tienen
@@ -26,30 +26,42 @@ límites de memoria y procesos.
 1. **Código e imagen** (como root):
 
    ```sh
-   git clone https://github.com/<ORG>/homelab-iac /opt/homelab-iac    # o copia la carpeta runner/
-   docker build -t homelab-runner:local /opt/homelab-iac/runner
+   git clone https://github.com/<ORG>/pve-platform-iac /opt/pve-platform-iac    # o copia la carpeta runner/
+   docker build -t platform-runner:local /opt/pve-platform-iac/runner
    ```
-2. **PAT** fine-grained: GitHub → Settings → Developer settings → Fine-grained tokens. *Resource
-   owner*: la organización. Permisos de organización: **Self-hosted runners: Read and write**, nada
-   más. Con caducidad (apúntala).
+2. **PAT** fine-grained: GitHub → Settings → Developer settings → Fine-grained tokens. Con caducidad
+   (apúntala) y nada más que esto:
+   - **Organización:** *Resource owner* = la organización; permiso de organización **Self-hosted
+     runners: Read and write**.
+   - **Cuenta personal:** *Resource owner* = tu usuario; *Only select repositories* = este repo;
+     permiso de repositorio **Administration: Read and write** (lo exige la API de runners de un
+     repo).
 3. **Configuración** (`root:root`, `0600`):
 
    ```sh
-   install -d -m 700 /etc/homelab-runner
+   install -d -m 700 /etc/platform-runner
    gh api orgs/<ORG>/actions/runner-groups --jq '.runner_groups[] | "\(.name)=\(.id)"'   # ids de los grupos
-   cat > /etc/homelab-runner/env <<'EOF'
+   cat > /etc/platform-runner/env <<'EOF'
    GH_ORG=<ORG>
    GH_RUNNER_PAT=github_pat_...
-   GROUP_ID_plan=<id de homelab-plan>
-   GROUP_ID_apply=<id de homelab-apply>
+   GROUP_ID_plan=<id de platform-plan>
+   GROUP_ID_apply=<id de platform-apply>
    EOF
-   chmod 600 /etc/homelab-runner/env
+   chmod 600 /etc/platform-runner/env
+   ```
+   Con **cuenta personal** no hay grupos de runners: en lugar de `GH_ORG` y `GROUP_ID_*`, pon
+   `GH_REPO=<usuario>/pve-platform-iac`. Los runners quedan registrados en el repo.
+   Después, activa los jobs que usan runners propios (están apagados por defecto, para que un fork
+   o una copia de la plantilla no deje jobs en cola):
+
+   ```sh
+   gh variable set PLATFORM_RUNNERS -R <OWNER>/pve-platform-iac --body true
    ```
 4. **Redes docker**, una por tipo, para poder filtrarlas por separado:
 
    ```sh
-   docker network create --subnet 172.30.1.0/24 homelab-plan
-   docker network create --subnet 172.30.2.0/24 homelab-apply
+   docker network create --subnet 172.30.1.0/24 platform-plan
+   docker network create --subnet 172.30.2.0/24 platform-apply
    ```
 5. **Cortafuegos.** El de `plan` solo necesita la API de Proxmox; el de `apply` también la red de las
    VMs (SSH para Ansible y keyscan). Los dos necesitan Internet (GitHub, HCP, descargas). Ejemplo con
@@ -73,16 +85,16 @@ límites de memoria y procesos.
 6. **Servicios:**
 
    ```sh
-   cp /opt/homelab-iac/runner/homelab-runner@.service /etc/systemd/system/
+   cp /opt/pve-platform-iac/runner/platform-runner@.service /etc/systemd/system/
    systemctl daemon-reload
-   systemctl enable --now homelab-runner@plan homelab-runner@apply
-   journalctl -fu homelab-runner@plan      # "... esperando un job"
+   systemctl enable --now platform-runner@plan platform-runner@apply
+   journalctl -fu platform-runner@plan      # "... esperando un job"
    ```
 
 ## Mantenerlo
 
 - **Imagen:** Dependabot propone las versiones nuevas de `actions-runner` en `runner/Dockerfile`. Tras
-  el merge: `git -C /opt/homelab-iac pull && docker build -t homelab-runner:local /opt/homelab-iac/runner`.
+  el merge: `git -C /opt/pve-platform-iac pull && docker build -t platform-runner:local /opt/pve-platform-iac/runner`.
   No hace falta reiniciar: cada job nuevo usa la imagen nueva.
 - **PAT:** antes de que caduque ([credenciales.md](../docs/credenciales.md#pat-de-los-runners)).
 - **Acceso al host:** solo admins. Quien entra en este host puede leer el PAT y ver los jobs en
@@ -95,4 +107,4 @@ límites de memoria y procesos.
 |---|---|
 | `Dockerfile` | Imagen oficial `actions-runner` fijada + python3-yaml, ansible, gnupg, jq, gh… |
 | `supervisor.sh` | Bucle JIT → contenedor efímero |
-| `homelab-runner@.service` | Unidad systemd, una instancia por tipo |
+| `platform-runner@.service` | Unidad systemd, una instancia por tipo |

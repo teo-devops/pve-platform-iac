@@ -1,4 +1,4 @@
-# homelab.yaml — la plataforma: Proxmox, red e imagen base. FUENTE UNICA para
+# platform.yaml — la plataforma: Proxmox, red e imagen base. FUENTE UNICA para
 # Terraform (terraform/requests.tf) y para `scripts/iac` (check, preflight, ACL).
 #
 # Lo cambia solo el admin, por PR. Los valores TODO hay que rellenarlos antes del
