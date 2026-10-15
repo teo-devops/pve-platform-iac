@@ -1,0 +1,227 @@
+# deploy.yml — lo que pasa al mergear en main: plan -> apply -> known-hosts -> configure.
+#
+#   plan        refresca el estado contra Proxmox (token de ESCRITURA) y guarda el plan.
+#               El plan va CIFRADO al artefacto (docs/seguridad.md, R-09).
+#   apply       aplica EXACTAMENTE ese plan: lo descifra, comprueba su sha256 y hace
+#               `terraform apply tfplan`. No recalcula nada.
+#   known-hosts lee las claves de host de las VMs dentro de la red. Una VM ya conocida
+#               tiene que presentar la misma clave que en el deploy anterior; solo las
+#               creadas en ESTE deploy pueden traer una nueva (TOFU solo al crear).
+#   configure   Ansible con verificacion estricta de esas claves.
+#
+# Aprobacion: el merge del admin ES la aprobacion (ruleset de main: PR + revision
+# de CODEOWNERS). Nadie aplica con credenciales locales salvo break-glass.
+#
+# Runner: `homelab-apply` (grupo de runners restringido a deploy.yml y drift.yml en
+# main; docs/bootstrap.md §6). Secretos: environment `production`, que solo
+# despliega desde main (docs/credenciales.md).
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "runner/**"
+  workflow_dispatch:
+    inputs:
+      accept_host_keys:
+        description: >-
+          (Solo admin) VMs, separadas por comas, cuya clave de host nueva se acepta
+          porque se ha verificado en la consola de Proxmox
+          (docs/runbooks/clave-de-host-cambiada.md). Vacio = ninguna.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# Un deploy detras de otro, nunca a la vez y nunca cancelando uno a medias. (Si
+# llegan varios merges seguidos, GitHub deja en cola solo el ultimo: incluye los
+# commits de los anteriores, asi que no se pierde nada.)
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: 1.16.5
+  NO_COLOR: "1"
+  TF_IN_AUTOMATION: "1"
+  TF_CLOUD_ORGANIZATION: ${{ vars.TF_CLOUD_ORGANIZATION }}
+
+jobs:
+  plan:
+    runs-on: [self-hosted, homelab-apply]
+    environment: production
+    timeout-minutes: 30
+    outputs:
+      changes: ${{ steps.plan.outputs.changes }}
+      sha256: ${{ steps.plan.outputs.sha256 }}
+      new_vms: ${{ steps.plan.outputs.new_vms }}
+    env:
+      TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
+      TF_VAR_pm_api_token: ${{ secrets.PM_APPLY_TOKEN }}
+      PLAN_ENC_KEY: ${{ secrets.PLAN_ENC_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Reglas de las peticiones
+        run: ./scripts/iac check
+      - name: Plan (refrescando el estado)
+        id: plan
+        run: |
+          SSL_CERT_FILE="$(./scripts/ca-bundle.sh)"; export SSL_CERT_FILE
+          terraform -chdir=terraform init -input=false -lockfile=readonly
+          set +e
+          terraform -chdir=terraform plan -input=false -lock-timeout=5m -detailed-exitcode -out=tfplan
+          rc=$?
+          set -e
+          [ "$rc" = 0 ] || [ "$rc" = 2 ] || exit "$rc"
+          echo "changes=$([ "$rc" = 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          ./scripts/iac plan-summary --markdown >> "$GITHUB_STEP_SUMMARY"
+          echo "new_vms=$(./scripts/iac plan-new-vms | paste -sd, -)" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum terraform/tfplan | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          ./scripts/encrypt-plan.sh encrypt terraform/tfplan
+          rm -f terraform/tfplan
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.plan.outputs.changes == 'true'
+        with:
+          name: tfplan
+          path: terraform/tfplan.gpg
+          retention-days: 1
+          if-no-files-found: error
+
+  apply:
+    needs: plan
+    if: needs.plan.outputs.changes == 'true'
+    runs-on: [self-hosted, homelab-apply]
+    environment: production
+    timeout-minutes: 60
+    env:
+      TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
+      TF_VAR_pm_api_token: ${{ secrets.PM_APPLY_TOKEN }}
+      PLAN_ENC_KEY: ${{ secrets.PLAN_ENC_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tfplan
+          path: terraform
+      - name: Aplicar exactamente el plan revisado
+        env:
+          EXPECTED: ${{ needs.plan.outputs.sha256 }}
+        run: |
+          ./scripts/encrypt-plan.sh decrypt terraform/tfplan.gpg
+          got=$(sha256sum terraform/tfplan | cut -d' ' -f1)
+          if [ "$got" != "$EXPECTED" ]; then
+            echo "::error::El plan descifrado ($got) no es el que genero el job plan ($EXPECTED). No se aplica."; exit 1
+          fi
+          SSL_CERT_FILE="$(./scripts/ca-bundle.sh)"; export SSL_CERT_FILE
+          terraform -chdir=terraform init -input=false -lockfile=readonly
+          # Si el estado cambio despues del plan (otro apply, cambio manual), Terraform
+          # rechaza el plan ("Saved plan is stale"): se relanza el deploy, no se fuerza.
+          terraform -chdir=terraform apply -input=false -lock-timeout=5m tfplan
+      - name: Limpiar
+        if: always()
+        run: rm -f terraform/tfplan terraform/tfplan.gpg
+
+  known-hosts:
+    needs: [plan, apply]
+    # Tambien sin cambios de infraestructura: un deploy de solo Ansible (p. ej.
+    # cambiar `members`) necesita las claves igual.
+    if: always() && needs.plan.result == 'success' && needs.apply.result != 'failure' && needs.apply.result != 'cancelled'
+    runs-on: [self-hosted, homelab-apply]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read   # bajar el known_hosts del deploy anterior
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # El ultimo artefacto known_hosts de main, aunque aquel deploy fallara despues
+      # (en configure): sus claves se verificaron igual.
+      - name: Claves publicadas por el deploy anterior
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p prev
+          id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=known_hosts&per_page=20" --jq \
+                "[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == \"main\")
+                  | select(.workflow_run.id != $GITHUB_RUN_ID)] | sort_by(.created_at) | last | .id // empty")
+          if [ -n "$id" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > prev/a.zip
+            unzip -o -q prev/a.zip -d prev && rm prev/a.zip
+            echo "Comparando con el artefacto $id"
+          else
+            echo "::notice::No hay claves publicadas antes (primer deploy): todas se aceptan (TOFU)."
+            : > prev/known_hosts
+          fi
+      - name: Leer y verificar las claves de host
+        env:
+          NEW_VMS: ${{ needs.plan.outputs.new_vms }}
+          ACCEPT: ${{ github.event.inputs.accept_host_keys }}
+        run: |
+          ./scripts/iac known-hosts --scan --wait 300 --output known_hosts \
+            --pinned prev/known_hosts --allow-new "$NEW_VMS,$ACCEPT"
+      # Publico a proposito (no hay secretos): `make ssh` lo baja y lo usa en modo estricto.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: known_hosts
+          path: known_hosts
+          retention-days: 90
+          if-no-files-found: error
+
+  configure:
+    needs: known-hosts
+    if: always() && needs.known-hosts.result == 'success'
+    runs-on: [self-hosted, homelab-apply]
+    environment: production
+    # Por encima del limite de cada despliegue de MVP (mvp_timeout, 45 min) para que
+    # falle el despliegue con su diagnostico y no el job a ciegas.
+    timeout-minutes: 75
+    env:
+      TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
+      ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+      GHCR_USER: ${{ vars.GHCR_USER }}
+      GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+      DATASPACE_MVP_DEPLOY_KEY: ${{ secrets.DATASPACE_MVP_DEPLOY_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: known_hosts
+      - name: Ansible
+        env:
+          ANSIBLE_SSH_KEY: ${{ secrets.ANSIBLE_SSH_KEY }}
+        run: |
+          eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k >/dev/null' EXIT
+          # La web de GitHub puede quitar el salto de linea final y ssh-add rechaza la
+          # clave sin el ("invalid format"); \r por si se pego desde Windows.
+          { printf '%s' "$ANSIBLE_SSH_KEY"; echo; } | tr -d '\r' | ssh-add -
+          terraform -chdir=terraform init -input=false -lockfile=readonly
+          (cd ansible && ansible-galaxy collection install -r requirements.yml)
+          ./scripts/iac configure --known-hosts known_hosts
+      - name: Limpiar
+        if: always()
+        run: |
+          rm -rf ansible/inventory/hosts.ini ansible/inventory/group_vars/all/access.yml ansible/inventory/group_vars/all/ssh_keys.yml

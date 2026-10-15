@@ -1,0 +1,36 @@
+---
+# Docker lo instala el rol `docker` (dependencia en meta/main.yml).
+
+- name: Crear directorio de configuracion del stack
+  ansible.builtin.file:
+    path: "{{ monitoring_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Sin notify a proposito: docker_compose_v2 ya recrea por su cuenta los
+# contenedores cuyo servicio haya cambiado (tarea "Levantar el stack").
+- name: Desplegar el docker-compose del stack de monitorizacion
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ monitoring_config_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+
+# Este si: prometheus.yml entra por bind mount, asi que cambiarlo no llega al
+# proceso hasta el reinicio del handler.
+- name: Desplegar la configuracion de Prometheus
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ monitoring_config_dir }}/prometheus.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart monitoring stack
+
+- name: Levantar el stack de monitorizacion
+  community.docker.docker_compose_v2:
+    project_src: "{{ monitoring_config_dir }}"
+    state: present

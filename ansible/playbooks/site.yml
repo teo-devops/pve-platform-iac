@@ -1,0 +1,6 @@
+---
+- name: Configuracion base de VMs recien provisionadas
+  hosts: proxmox_vms
+  become: true
+  roles:
+    - base

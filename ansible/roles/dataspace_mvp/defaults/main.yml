@@ -1,0 +1,48 @@
+---
+# mvp_repo, mvp_ref y mvp_path llegan por host (los escribe
+# inventory/generate_inventory.sh desde el bloque `mvp:` de la peticion).
+
+# Cuenta de SERVICIO que despliega el MVP. No es de ninguna persona: asi el
+# despliegue no depende de quien este en el proyecto. Los miembros del proyecto
+# estan en el grupo docker y reciben su kubeconfig del cluster kind (ver tasks).
+mvp_user: dataspace
+mvp_home: "/home/{{ mvp_user }}"
+# Un clon por VM; el MVP concreto es la carpeta mvp_path dentro.
+mvp_checkout: "{{ mvp_home }}/dataspace-mvp"
+mvp_dir: "{{ mvp_checkout }}/{{ mvp_path }}"
+
+# Credenciales (environment `production` de GitHub, docs/credenciales.md). Se
+# leen del entorno de quien ejecuta Ansible y NUNCA se quedan en la VM:
+#   DATASPACE_MVP_DEPLOY_KEY  deploy key SSH de solo lectura de dataspace-mvp
+#   GHCR_USER / GHCR_READ_TOKEN  PAT clasico con solo read:packages (imagenes privadas)
+mvp_deploy_key: "{{ lookup('ansible.builtin.env', 'DATASPACE_MVP_DEPLOY_KEY') }}"
+mvp_ghcr_user: "{{ lookup('ansible.builtin.env', 'GHCR_USER') }}"
+mvp_ghcr_token: "{{ lookup('ansible.builtin.env', 'GHCR_READ_TOKEN') }}"
+# Config de docker solo para este despliegue: se borra al terminar (y al empezar,
+# por si un run anterior se corto), asi el token de ghcr no se queda en la VM.
+mvp_docker_config: "{{ mvp_home }}/.docker-mvp-deploy"
+
+# Claves de host de github.com publicadas por GitHub (api.github.com/meta,
+# comprobadas el 14-oct-2026). Fijadas: el clon no acepta otra (sin TOFU).
+mvp_github_known_hosts: |
+  github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+  github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+
+# ⚠️ true = BORRA el cluster kind del MVP (kind-down.sh) y lo vuelve a crear, datos
+# incluidos. Solo a mano: make configure NAME=<vm> ARGS="-e mvp_recreate=true"
+mvp_recreate: false
+
+# kind-up.sh tarda 10-25 min (imagenes + plataforma + MVP). Pasado este limite se
+# para y se da por fallido (el job configure tiene su propio limite, por encima).
+mvp_timeout: 2700
+# Cada cuanto se mira el estado y se escribe una linea de progreso.
+mvp_poll: 30
+# Vueltas seguidas que un pod puede estar en ImagePullBackOff/CrashLoopBackOff/...
+# antes de darlo por perdido (10 x 30s = 5 min). Los "sin arreglo"
+# (ErrImageNeverPull) paran a la primera.
+mvp_fail_after: 10
+mvp_estado_bin: /usr/local/bin/estado-mvp
+
+# Pruebas del MVP (scripts/pruebas/bruno.sh) en la VM. Version fijada.
+mvp_install_bruno: true
+mvp_bruno_version: 4.2.0

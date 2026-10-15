@@ -1,0 +1,14 @@
+# ansible-lint del CI (pr-validate.yml).
+#
+# var-naming[no-role-prefix]: los roles son internos de este repo y sus variables
+# llevan un prefijo corto y documentado (mvp_, kind_, k3s_, base_). Las mvp_* son
+# ademas la interfaz con el inventario (mvp_repo/ref/path): renombrarlas no aporta.
+skip_list:
+  - var-naming[no-role-prefix]
+# Estilo: se avisa, no se bloquea.
+warn_list:
+  - yaml[line-length]
+  - jinja[spacing]
+  - name[template]
+  - name[casing]
+  - no-handler

@@ -1,0 +1,19 @@
+# Dependabot: PRs con las versiones nuevas de lo que esta fijado. Nada se actualiza
+# solo: cada subida es un PR que revisa el admin como cualquier otro.
+version: 2
+updates:
+  # Actions de los workflows (fijadas por SHA; Dependabot actualiza SHA y comentario)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}
+    cooldown: {default-days: 14}   # nada publicado hace menos de 2 semanas
+  # Provider de Terraform (bpg/proxmox) y el lockfile
+  - package-ecosystem: terraform
+    directory: /terraform
+    schedule: {interval: weekly}
+    cooldown: {default-days: 14}
+  # Imagen base de los runners
+  - package-ecosystem: docker
+    directory: /runner
+    schedule: {interval: weekly}
+    cooldown: {default-days: 14}

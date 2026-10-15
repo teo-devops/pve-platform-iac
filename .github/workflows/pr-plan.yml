@@ -1,0 +1,199 @@
+# pr-plan.yml — `terraform plan` de un PR, en el homelab, SIN ejecutar codigo del PR.
+#
+# El problema: el plan necesita llegar a Proxmox (runner del homelab) y leer el
+# estado (token de HCP). Si ese job ejecutara el codigo del PR, un PR malicioso
+# (un .tf con un `external`, un workflow cambiado, un script tocado) correria en
+# el homelab con esas credenciales.
+#
+# La solucion (docs/diseno.md, D-05; docs/seguridad.md, R-02):
+#   - `pull_request_target`: el WORKFLOW es siempre el de main, no el del PR.
+#   - Se hace checkout de MAIN (codigo revisado) y del PR solo se copia
+#     `requests/` (datos YAML, no codigo), y solo si el PR no toca NADA mas.
+#     Un PR que toca terraform/, ansible/, scripts/, .github/... no se planifica
+#     aqui: lo revisa y planifica el admin (`make plan` o tras el merge).
+#   - Antes de Terraform, los YAML pasan el esquema y `iac check` (de main).
+#   - Token de Proxmox de SOLO LECTURA (PVEAuditor en los pools) y -refresh=false
+#     -lock=false: el plan no escribe nada en ningun sitio.
+#
+# Runner: `homelab-plan` (grupo de runners restringido a ESTE workflow en main;
+# docs/bootstrap.md §6). Secretos: environment `plan` (PM_PLAN_TOKEN, TF_API_TOKEN).
+name: pr-plan
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+# Sin permisos por defecto; cada job pide lo suyo.
+permissions: {}
+
+concurrency:
+  group: pr-plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  TF_VERSION: 1.16.5
+  NO_COLOR: "1"
+
+jobs:
+  # Decide si el PR es "solo peticiones". Runner hospedado, sin secretos: solo
+  # lee la lista de ficheros del PR por la API (no hace checkout de nada).
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      only_requests: ${{ steps.files.outputs.only_requests }}
+      changes: ${{ steps.files.outputs.changes }}
+    steps:
+      - id: files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          ASSOC: ${{ github.event.pull_request.author_association }}
+        run: |
+          # Solo gente de la organizacion o colaboradores del repo. (Un repo privado
+          # no se puede forkear desde fuera, pero no cuesta nada comprobarlo.)
+          case "$ASSOC" in OWNER|MEMBER|COLLABORATOR) ;; *)
+            echo "only_requests=false" >> "$GITHUB_OUTPUT"
+            echo "Autor '$ASSOC': no se planifica." >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+          esac
+          # filename y previous_filename (renombrados): los dos tienen que estar en
+          # requests/{vms,clusters}/<nombre>.yaml.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+            --jq '.[] | {status, filename, previous: (.previous_filename // "")}' | jq -sc . > changes.json
+          jq -r '.[] | .filename, (select(.previous != "") | .previous)' changes.json > files.txt
+          echo "Ficheros del PR:"; cat files.txt
+          echo "changes=$(cat changes.json)" >> "$GITHUB_OUTPUT"
+          if [ -s files.txt ] && ! grep -vqE '^requests/(vms|clusters)/[a-z0-9][a-z0-9-]{0,40}[a-z0-9]?\.yaml$' files.txt; then
+            echo "only_requests=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "only_requests=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Sin plan automatico"
+              echo "Este PR toca ficheros fuera de \`requests/\`. Por seguridad, el plan con credenciales"
+              echo "solo se hace para PRs que cambian peticiones. El admin lo revisa y planifica"
+              echo "(docs/operador.md -> \"Revisar un PR\")."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  plan:
+    needs: gate
+    if: needs.gate.outputs.only_requests == 'true'
+    runs-on: [self-hosted, homelab-plan]
+    environment: plan
+    permissions:
+      contents: read
+      pull-requests: write   # comentar el plan en el PR
+    timeout-minutes: 20
+    env:
+      TF_CLOUD_ORGANIZATION: ${{ vars.TF_CLOUD_ORGANIZATION }}
+      TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
+      TF_VAR_pm_api_token: ${{ secrets.PM_PLAN_TOKEN }}
+      TF_IN_AUTOMATION: "1"
+    steps:
+      # 1. Codigo de MAIN (el revisado). Con pull_request_target es el ref por defecto.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      # 2. El PR, solo requests/, en un directorio aparte. Desde refs/pull/N/head
+      #    del repo central (el fork puede ser privado y el token no llegar a el).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
+          path: .pr
+          sparse-checkout: requests
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # 3. Aplicar sobre main SOLO los ficheros que cambia el PR (si el PR va por
+      #    detras de main, copiar requests/ entero "borraria" las peticiones nuevas
+      #    de main en el plan). Comprobaciones: el commit es el del evento (si
+      #    alguien empujo entre medias, el evento nuevo hara su plan), nada de
+      #    symlinks (un enlace a /etc/... lo leeria yamldecode y acabaria en la
+      #    salida del plan) y solo ficheros regulares.
+      - name: Aplicar las peticiones del PR sobre main (solo datos)
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGES: ${{ needs.gate.outputs.changes }}
+        run: |
+          got=$(git -C .pr rev-parse HEAD)
+          if [ "$got" != "$HEAD_SHA" ]; then
+            echo "::error::refs/pull apunta a $got y el evento es de $HEAD_SHA (push nuevo en curso). Se planifica en el siguiente evento."; exit 1
+          fi
+          echo "$CHANGES" | jq -r '.[] | [.status, .filename, .previous] | @tsv' |
+          while IFS=$'\t' read -r status file previous; do
+            # Las rutas ya las valido el job gate; se repite por si acaso.
+            [[ "$file" =~ ^requests/(vms|clusters)/[a-z0-9][a-z0-9-]*\.yaml$ ]] || { echo "::error::ruta inesperada $file"; exit 1; }
+            if [ -n "$previous" ]; then rm -f -- "$previous"; fi
+            if [ "$status" = removed ]; then rm -f -- "$file"; echo "  - $file"; continue; fi
+            if [ -L ".pr/$file" ] || [ ! -f ".pr/$file" ]; then
+              echo "::error::$file no es un fichero regular en el PR (¿enlace simbolico?). No se planifica."; exit 1
+            fi
+            cp -- ".pr/$file" "$file"; echo "  ${status:0:1} $file"
+          done
+          rm -rf .pr
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet pyyaml==6.0.3 check-jsonschema==0.38.2
+
+      - name: Validar las peticiones (esquema + reglas de main)
+        run: |
+          shopt -s nullglob
+          vms=(requests/vms/*.yaml); cl=(requests/clusters/*.yaml)
+          [ ${#vms[@]} -eq 0 ] || check-jsonschema --schemafile schema/vm.schema.json "${vms[@]}"
+          [ ${#cl[@]} -eq 0 ] || check-jsonschema --schemafile schema/cluster.schema.json "${cl[@]}"
+          ./scripts/iac check
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Plan (solo lectura, sin refrescar, sin lock)
+        id: plan
+        run: |
+          # TLS verificado contra la CA del cluster (docs/seguridad.md, R-03).
+          SSL_CERT_FILE="$(./scripts/ca-bundle.sh)"; export SSL_CERT_FILE
+          terraform -chdir=terraform init -input=false -lockfile=readonly
+          # -refresh=false: refrescar una VM exige VM.Config.Disk en Proxmox (lo pide
+          # para leer sus discos), que es un permiso de MODIFICACION; el token de
+          # plan es de solo lectura. La deriva la ven el plan de main y drift.yml.
+          terraform -chdir=terraform plan -input=false -lock=false -refresh=false -out=tfplan
+          terraform -chdir=terraform show -no-color tfplan > plan.txt
+          ./scripts/iac plan-summary --markdown > summary.md
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comentar el plan en el PR
+        if: always() && steps.plan.outcome != 'skipped'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OUTCOME: ${{ steps.plan.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- homelab-iac:plan -->';
+            const read = f => fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
+            let plan = read('plan.txt');
+            if (plan.length > 55000) plan = plan.slice(0, 55000) + '\n... (recortado; el plan completo esta en el log del job)';
+            const ok = process.env.OUTCOME === 'success';
+            const body = [
+              marker,
+              ok ? read('summary.md') : '### ❌ El plan ha fallado\nMira el log del job (enlace abajo). Lo mas habitual: una regla de `iac check`.',
+              ok ? `<details><summary>Plan completo</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>` : '',
+              `\n_Commit ${context.payload.pull_request.head.sha.slice(0, 7)} · [job](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}) · plan de solo lectura: no se ha aplicado nada._`,
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const mine = comments.find(c => c.user.type === 'Bot' && c.body.includes(marker));
+            if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body });
+
+      # Runner efimero, pero por si acaso: el plan no se queda en disco.
+      - name: Limpiar
+        if: always()
+        run: rm -f terraform/tfplan plan.txt summary.md

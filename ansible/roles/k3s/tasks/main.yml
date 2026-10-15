@@ -1,0 +1,93 @@
+---
+# El instalador es el install.sh del TAG de la version fijada (k3s_version), no el
+# de get.k3s.io (que cambia sin aviso): mismo criterio que la imagen base
+# (docs/seguridad.md, R-05). El instalador descarga el binario de esa release y
+# comprueba su sha256 contra el sha256sum publicado en la propia release.
+- name: Descargar el instalador de k3s {{ k3s_version }}
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/k3s-io/k3s/{{ k3s_version | urlencode }}/install.sh"
+    dest: "/usr/local/lib/k3s-install-{{ k3s_version }}.sh"
+    mode: "0755"
+
+- name: Instalar k3s server (control-plane)
+  when: "'k3s_server' in group_names"
+  block:
+    # kubeconfig 0600: es de admin del cluster. `make kubeconfig` lo lee con sudo.
+    - name: Instalar k3s server
+      ansible.builtin.command:
+        cmd: >-
+          /usr/local/lib/k3s-install-{{ k3s_version }}.sh server
+          --write-kubeconfig-mode 600 --tls-san {{ ansible_host }}
+        creates: /usr/local/bin/k3s
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+
+    - name: Esperar a que se genere el node-token
+      ansible.builtin.wait_for:
+        path: /var/lib/rancher/k3s/server/node-token
+        timeout: 60
+
+    - name: Leer node-token
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: _node_token_raw
+
+    # Al ser un set_fact dentro del mismo run de playbook, queda disponible via
+    # hostvars[server_host]['node_token'] para los agents en este mismo play,
+    # sin necesidad de fact caching externo.
+    - name: Exponer el join-token como hostvar
+      ansible.builtin.set_fact:
+        node_token: "{{ (_node_token_raw.content | b64decode).strip() }}"
+
+    # El dest va anclado a playbook_dir y no como "./kubeconfigs/": fetch resuelve
+    # las rutas relativas respecto al PLAYBOOK, no al directorio de trabajo, asi
+    # que el fichero acababa en playbooks/kubeconfigs/ - fuera de lo que cubria
+    # .gitignore - y se colaba en un commit. Lleva credenciales de admin.
+    - name: Recuperar kubeconfig del operador a la maquina de control
+      ansible.builtin.fetch:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "{{ playbook_dir }}/../kubeconfigs/{{ inventory_hostname }}.yaml"
+        flat: true
+        mode: "0600"
+
+- name: Instalar k3s agent (worker)
+  when: "'k3s_agent' in group_names"
+  vars:
+    # Grupo server del MISMO cluster, derivado del nombre del grupo agent propio
+    # ("usera_devcluster_agent" -> "usera_devcluster_server").
+    #
+    # El reject descarta el grupo padre "k3s_agent", que group_names ordena antes
+    # que el del cluster: sin el, `first` lo elige y todos los workers acaban
+    # pidiendo el token al master del primer cluster alfabetico.
+    _server_group: >-
+      {{ (group_names
+          | select('match', '^.*_agent$')
+          | reject('equalto', 'k3s_agent')
+          | first) | regex_replace('_agent$', '_server') }}
+    _server_host: "{{ groups[_server_group][0] }}"
+    _join_token: "{{ hostvars[_server_host]['node_token'] | default('') }}"
+    # Lo pone generate_inventory.sh como var del grupo agent; el fallback cubre
+    # un inventario escrito a mano.
+    _master_ip: "{{ k3s_master_ip | default(hostvars[_server_host]['ansible_host']) }}"
+  block:
+    # Falla aqui y no dentro del journal de k3s-agent, que es donde aparece si se
+    # deja pasar un token vacio.
+    - name: Comprobar que el server del cluster expuso el join-token
+      ansible.builtin.assert:
+        that:
+          - _join_token | length > 0
+        fail_msg: >-
+          No hay node_token en {{ _server_host }} (grupo {{ _server_group }}).
+          Los agents necesitan que el server corra en el MISMO run: ejecuta
+          playbooks/k3s.yml sobre k3s_server:k3s_agent, sin --limit a los workers.
+
+    # El join-token va por el entorno, no en la linea de comandos (se veria en `ps`).
+    - name: Instalar k3s agent
+      ansible.builtin.command:
+        cmd: /usr/local/lib/k3s-install-{{ k3s_version }}.sh agent
+        creates: /usr/local/bin/k3s
+      environment:
+        INSTALL_K3S_VERSION: "{{ k3s_version }}"
+        K3S_URL: "https://{{ _master_ip }}:6443"
+        K3S_TOKEN: "{{ _join_token }}"
+      no_log: true

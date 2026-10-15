@@ -1,0 +1,7 @@
+---
+# Reinicio y no recarga: Prometheus solo relee su config con SIGHUP o con el
+# endpoint /-/reload, que no esta habilitado aqui.
+- name: Restart monitoring stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ monitoring_config_dir }}"
+    state: restarted

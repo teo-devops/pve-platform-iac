@@ -1,0 +1,42 @@
+---
+# Este fichero estaba antes en group_vars/all.yml, al lado del directorio
+# group_vars/all/. Cuando coexisten, Ansible carga SOLO el directorio y descarta
+# el fichero en silencio: ninguna de estas variables llegaba a los hosts y los
+# playbooks morian con "'base_packages' is undefined".
+timezone: "Europe/Madrid"
+
+ntp_servers:
+  - 0.es.pool.ntp.org
+  - 1.es.pool.ntp.org
+  - 2.es.pool.ntp.org
+
+# Paquetes instalados automáticamente en todas las máquinas virtuales del inventario
+base_packages:
+  # acl (setfacl): sin el, Ansible no puede pasar de ops a otra cuenta sin
+  # privilegios (become_user), p. ej. el clon del MVP con la cuenta de servicio dataspace.
+  - acl
+  - qemu-guest-agent
+  - chrony
+  - htop
+  - curl
+  - vim
+  - unattended-upgrades
+  - prometheus-node-exporter
+
+# Cuenta de arranque/automatizacion (cloud-init). Las personas entran con la
+# suya propia, que crea el rol base a partir de vm_access.
+admin_user: ops
+
+# Configuración dinámica de scraping para Prometheus.
+# Recoge de forma automática todas las IPs de las VMs creadas/gestionadas por el IaC (grupo proxmox_vms).
+# Esto asegura que cualquier clúster nuevo o VM standalone se empiece a monitorizar sin tocar la config.
+monitoring_scrape_jobs:
+  - job_name: "node-exporter"
+    targets: >-
+      {{ groups['proxmox_vms'] | default([]) | map('extract', hostvars, 'ansible_host') | map('regex_replace', '^(.*)$', '\1:9100') | list }}
+
+  # API Server de cada cluster k3s (metricas nativas). Sale del inventario: un
+  # cluster nuevo entra solo al reconfigurar monitoring.
+  - job_name: "k3s-apiserver"
+    targets: >-
+      {{ groups['k3s_server'] | default([]) | map('extract', hostvars, 'ansible_host') | map('regex_replace', '^(.*)$', '\1:6443') | list }}

@@ -1,0 +1,15 @@
+# Un runner efimero de GitHub Actions del tipo %i (plan | apply).
+#   sudo cp runner/homelab-runner@.service /etc/systemd/system/
+#   sudo systemctl enable --now homelab-runner@plan homelab-runner@apply
+[Unit]
+Description=Runner efimero de homelab-iac (%i)
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+ExecStart=/opt/homelab-iac/runner/supervisor.sh %i
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

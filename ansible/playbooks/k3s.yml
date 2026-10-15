@@ -1,0 +1,15 @@
+---
+# Requiere que se haya corrido antes playbooks/site.yml (rol base: qemu-guest-agent,
+# chrony, usuario admin) y que inventory/hosts.ini este generado via
+# inventory/generate_inventory.sh contra el ultimo `terraform apply`.
+#
+# El orden server -> agent dentro del mismo play importa: los agents necesitan
+# el node_token que el server genera en su propio bloque de tareas (ver
+# roles/k3s/tasks/main.yml). Al estar todo en un unico play, Ansible ejecuta
+# tarea a tarea sobre el batch de hosts, así que todos los servers terminan su
+# bloque completo antes de que se evalue el bloque de agents.
+- name: Bootstrap de clusters k3s (server + agents)
+  hosts: k3s_server:k3s_agent
+  become: true
+  roles:
+    - k3s

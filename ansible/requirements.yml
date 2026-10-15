@@ -1,0 +1,17 @@
+---
+# Colecciones que usan los roles de este repo. Instalar antes del primer run
+# (van a ~/.ansible/collections, el path por defecto):
+#
+#   cd ansible && ansible-galaxy collection install -r requirements.yml
+collections:
+  # roles/base -> community.general.timezone; roles/dataspace_mvp -> community.general.npm
+  - name: community.general
+    version: ">=8.0.0"
+
+  # roles/monitoring -> community.docker.docker_compose_v2
+  - name: community.docker
+    version: ">=3.10.0"
+
+  # roles/kind_host -> ansible.posix.sysctl
+  - name: ansible.posix
+    version: ">=1.5.0"

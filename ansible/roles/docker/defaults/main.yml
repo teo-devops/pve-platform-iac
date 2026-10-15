@@ -1,0 +1,3 @@
+---
+# Arquitectura tal como la nombra el repo de Docker (no como la nombra uname).
+docker_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_architecture] | default('amd64') }}"

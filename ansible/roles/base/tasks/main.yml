@@ -1,0 +1,57 @@
+---
+- name: Actualizar cache de apt
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Instalar paquetes base
+  ansible.builtin.apt:
+    name: "{{ base_packages }}"
+    state: present
+
+- name: Habilitar y arrancar qemu-guest-agent
+  ansible.builtin.systemd:
+    name: qemu-guest-agent
+    enabled: true
+    state: started
+
+- name: Habilitar y arrancar prometheus-node-exporter
+  ansible.builtin.systemd:
+    name: prometheus-node-exporter
+    enabled: true
+    state: started
+
+- name: Configurar timezone
+  community.general.timezone:
+    name: "{{ timezone }}"
+
+# Config explicita de chrony: un reloj desviado rompe TLS, los tokens de
+# Keycloak/DCP del dataspace y el consenso de k3s (etcd).
+- name: Desplegar configuracion de chrony
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reiniciar chrony
+
+- name: Asegurar que chrony esta activo
+  ansible.builtin.systemd:
+    name: chrony
+    enabled: true
+    state: started
+
+# Quien entra en la VM: cuenta `ops` de la automatizacion y una cuenta por
+# persona del proyecto con las claves de su perfil de GitHub. Ver tasks/access.yml.
+- name: Gestionar el acceso a la VM
+  ansible.builtin.import_tasks: access.yml
+
+- name: Configurar unattended-upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+    mode: "0644"
+  when: enable_unattended_upgrades

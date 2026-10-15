@@ -1,0 +1,34 @@
+# projects.yaml — quien es quien y a que tiene acceso.
+#
+#   admins:   personas con control total. Revisan y mergean PRs, entran en todas las
+#             VMs y su ssh_key va a la cuenta `ops` (arranque) de todas.
+#   service:  cuentas de la automatizacion. `ci` es la clave con la que Ansible entra
+#             (secreto ANSIBLE_SSH_KEY en el environment production).
+#   projects: la unidad de aislamiento. Cada proyecto tiene su pool de Proxmox, sus
+#             rangos de VMID/IP y sus miembros. Un miembro SOLO entra en las VMs de
+#             los proyectos en que esta.
+#
+# Las personas se identifican por su usuario de GitHub. Su cuenta Linux en las VMs
+# es ese usuario en minusculas, con las claves de https://github.com/<usuario>.keys.
+# Rotar una clave = cambiarla en GitHub; se aplica en el siguiente `configure`.
+#
+# Lo cambia solo el admin, por PR (docs/operador.md: "Alta de un proyecto" y
+# "Alta y baja de una persona"). Un proyecto nuevo necesita ademas su pool y sus
+# ACL en Proxmox: `make proxmox-acl` imprime los comandos.
+
+admins:
+  teo-devops:
+    ssh_key: TODO-ssh-ed25519 AAAA... (contenido de ~/.ssh/id_ed25519.pub)
+
+service:
+  ci:
+    ssh_key: TODO-ssh-ed25519 AAAA... (publica de ANSIBLE_SSH_KEY)
+
+projects:
+  # Dataspaces propios (teo-devops/dataspace-mvp). Ejemplo: cambia o quita lo que no aplique.
+  dataspace:
+    description: MVP de dataspace (EDC) generados con dsgen
+    pool: proj-dataspace
+    ranges:
+      - {vmids: [1100, 1199], ips: [100, 119]}
+    members: []

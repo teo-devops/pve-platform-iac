@@ -1,0 +1,5 @@
+---
+# Version de k3s. La pone el inventario por cluster (la de su familia en
+# catalog/flavors.yaml, o `k3s_version` de la peticion); esta es la de reserva.
+# Fijada: el instalador y el binario son los de ESE tag (tasks/main.yml).
+k3s_version: "v1.33.5+k3s1"

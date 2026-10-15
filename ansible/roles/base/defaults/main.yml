@@ -1,0 +1,9 @@
+---
+enable_unattended_upgrades: true
+
+# De donde salen las claves de cada persona: <url>/<usuario>.keys
+base_github_url: https://github.com
+
+# Grupo que marca las cuentas personales gestionadas por este rol. Solo las de
+# este grupo se borran cuando alguien pierde el acceso.
+base_people_group: iac-users

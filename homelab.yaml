@@ -1,0 +1,42 @@
+# homelab.yaml — la plataforma: Proxmox, red e imagen base. FUENTE UNICA para
+# Terraform (terraform/requests.tf) y para `scripts/iac` (check, preflight, ACL).
+#
+# Lo cambia solo el admin, por PR. Los valores TODO hay que rellenarlos antes del
+# primer plan: `make preflight` falla mientras quede alguno (docs/bootstrap.md §2).
+
+proxmox:
+  # URL base de la API, con el nombre o IP que aparece en el certificado del nodo
+  # (SAN de pve-ssl.pem). Con insecure = false, otro nombre falla el TLS.
+  endpoint: https://TODO-pve1:8006/
+  # Nodo -> IP de gestion. El orden importa: es el del round-robin de VMs.
+  nodes:
+    TODO-pve1: TODO-192.168.1.10
+  # Donde van los discos de las VMs (local-lvm, local-zfs...)
+  datastore: local-lvm
+  # Donde se descarga la imagen base (tiene que admitir el tipo de contenido "iso")
+  image_datastore: local
+  bridge: vmbr0
+  vlan_tag: null
+  # Zona SDN del bridge; en una instalacion sin SDN es "localnetwork".
+  sdn_zone: localnetwork
+
+network:
+  # Red de las VMs: <prefix>.<octeto>/<cidr_bits>. Los rangos de projects.yaml son
+  # octetos de esta red.
+  prefix: "TODO-192.168.50"
+  cidr_bits: 24
+  gateway: TODO-192.168.50.1
+  dns: [TODO-192.168.50.1]
+  # Octetos que ninguna VM puede usar (gateway, nodos, DHCP del router...)
+  reserved_ips: [1]
+
+# Imagen base de TODAS las VMs nuevas. Version FECHADA y checksum exacto: nunca
+# "current" (docs/seguridad.md, R-05). Para subirla: `make image-pin`, que elige la
+# release, verifica la firma GPG de SHA256SUMS y reescribe este bloque.
+# Cambiarla NO recrea las VMs existentes (ignore_changes en modules/vm).
+image:
+  release: "20260926"
+  url: https://cloud-images.ubuntu.com/releases/noble/release-20260926/ubuntu-24.04-server-cloudimg-amd64.img
+  sha256: 6a81c37564db9b1ee84e141922625e1d7c5b389b99bb3c572e0243607d5bb4d2
+  # Verificado el 14-10-2026: firma GPG correcta de SHA256SUMS con la clave
+  # D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81 (UEC Image Automatic Signing Key).

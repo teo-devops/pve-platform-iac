@@ -1,0 +1,13 @@
+# yamllint del CI (pr-validate.yml). Lo justo para pillar errores, no estilo.
+extends: default
+ignore: |
+  .terraform/
+  ansible/inventory/group_vars/all/access.yml
+  ansible/inventory/group_vars/all/ssh_keys.yml
+rules:
+  line-length: {max: 160, level: warning}
+  document-start: disable
+  truthy: {allowed-values: ["true", "false", "on"], check-keys: false}
+  comments: {min-spaces-from-content: 1}
+  comments-indentation: disable
+  braces: {max-spaces-inside: 1}

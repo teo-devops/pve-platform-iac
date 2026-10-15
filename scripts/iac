@@ -1,0 +1,1432 @@
+#!/usr/bin/env python3
+"""iac - la puerta de entrada al repo para quien no sabe Terraform.
+
+Normalmente se usa a traves del Makefile (`make help`). Cada subcomando se puede
+llamar tambien directamente: `scripts/iac <comando> --help`.
+
+Solo depende de Python 3 y PyYAML. Algunos comandos usan ademas terraform, ssh,
+ssh-keyscan o la CLI de GitHub (gh); lo dicen al fallar.
+
+Referencia de cada comando: docs/pipeline.md (los que usa CI) y docs/inicio-rapido.md
+(los de los devs).
+"""
+
+import argparse
+import glob
+import ipaddress
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("Falta PyYAML: `apt install python3-yaml` o `pip install pyyaml`.")
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TF_DIR = os.path.join(ROOT, "terraform")
+ANSIBLE_DIR = os.path.join(ROOT, "ansible")
+REQ_CLUSTERS = os.path.join(ROOT, "requests", "clusters")
+REQ_VMS = os.path.join(ROOT, "requests", "vms")
+PLAN_FILE = os.path.join(TF_DIR, "tfplan")
+CA_FILE = os.path.join(TF_DIR, "certs", "pve-root-ca.pem")
+GITHUB_URL = "https://github.com"
+# Claves de host de las VMs que publica el job `known-hosts` del pipeline. ssh,
+# tunnel y kubeconfig las usan EN LUGAR de ~/.ssh/known_hosts: una VM recreada
+# con la misma IP no da el aviso de "HOST IDENTIFICATION HAS CHANGED" (la clave
+# nueva ya esta aqui), y una suplantacion si.
+KNOWN_HOSTS = os.path.expanduser(os.environ.get("IAC_KNOWN_HOSTS", "~/.ssh/known_hosts.homelab-iac"))
+KNOWN_HOSTS_ARTIFACT, KNOWN_HOSTS_MAX_AGE = "known_hosts", 600
+
+NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,40}[a-z0-9])?$")
+KEY_RE = re.compile(r"^(ssh-(rsa|ed25519)|ecdsa-sha2-nistp[0-9]+) AAAA[0-9A-Za-z+/]{40,}={0,2}( |$)")
+# Usuario de GitHub que ademas sea un nombre de cuenta Linux valido (<= 32).
+GH_USER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,31}$")
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+TAG_RE = re.compile(r"^v?[0-9][A-Za-z0-9._-]*$")
+REPO_RE = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
+PATH_RE = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
+
+VM_FIELDS = {"project", "flavor", "profile", "vmid", "ip", "mvp", "description"}
+CLUSTER_FIELDS = {"project", "flavor_size", "workers", "vmid_base", "ip_base", "k3s_version", "description"}
+MVP_FIELDS = {"repo", "ref", "path"}
+
+# --- salida -------------------------------------------------------------------
+
+TTY = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+
+
+def _c(code, s):
+    return f"\033[{code}m{s}\033[0m" if TTY else s
+
+
+def red(s): return _c("31;1", s)
+def yellow(s): return _c("33;1", s)
+def green(s): return _c("32;1", s)
+def bold(s): return _c("1", s)
+def dim(s): return _c("2", s)
+
+
+def warn_box(lines):
+    """Aviso visible: se usa justo antes de acciones con impacto."""
+    print(yellow("⚠️  " + lines[0]))
+    for l in lines[1:]:
+        print(yellow("   " + l))
+
+
+def die(msg, code=1):
+    print(red("✗ ") + msg, file=sys.stderr)
+    sys.exit(code)
+
+
+# --- carga de datos -------------------------------------------------------------
+
+def load_yaml(path):
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
+def load_all():
+    platform = load_yaml(os.path.join(ROOT, "homelab.yaml"))
+    people = load_yaml(os.path.join(ROOT, "projects.yaml"))
+    catalog = load_yaml(os.path.join(ROOT, "catalog", "flavors.yaml"))
+    profiles = load_yaml(os.path.join(ROOT, "catalog", "profiles.yaml"))
+    clusters = {os.path.basename(p)[:-5]: load_yaml(p) for p in sorted(glob.glob(os.path.join(REQ_CLUSTERS, "*.yaml")))}
+    vms = {os.path.basename(p)[:-5]: load_yaml(p) for p in sorted(glob.glob(os.path.join(REQ_VMS, "*.yaml")))}
+    return platform, people, catalog, profiles, clusters, vms
+
+
+def prefix_of(platform):
+    return str(platform["network"]["prefix"])
+
+
+def expand(platform, catalog, clusters, vms):
+    """Todas las VMs que resultan de las peticiones (lo mismo que all_vms en requests.tf)."""
+    prefix = prefix_of(platform)
+    out = []
+    for name, c in clusters.items():
+        size = catalog.get("cluster_sizes", {}).get(c.get("flavor_size"), {})
+        workers = c.get("workers", size.get("default_workers", 2))
+        for i in range(workers + 1):
+            out.append({
+                "name": f"{name}-master" if i == 0 else f"{name}-worker-{i:02d}",
+                "request": name, "kind": "cluster", "file": f"requests/clusters/{name}.yaml",
+                "project": c.get("project"), "vmid": c.get("vmid_base", 0) + i,
+                "octet": c.get("ip_base", 0) + i,
+                "flavor": f"{c.get('flavor_size')}-{'master' if i == 0 else 'worker'}",
+            })
+    for name, v in vms.items():
+        ip = str(v.get("ip", ""))
+        octet = int(ip.split(".")[-1]) if ip.startswith(prefix + ".") and ip.split(".")[-1].isdigit() else -1
+        out.append({
+            "name": name, "request": name, "kind": "vm", "file": f"requests/vms/{name}.yaml",
+            "project": v.get("project"), "vmid": v.get("vmid"), "octet": octet,
+            "flavor": v.get("flavor", "vm-small"), "profile": v.get("profile", "vm"),
+        })
+    return out
+
+
+def cluster_profile(profiles, size):
+    for pname, p in profiles.get("cluster_profiles", {}).items():
+        if size in p.get("sizes", []):
+            return pname
+    return None
+
+
+def github_keys(user, timeout=5):
+    """Claves publicas del perfil de GitHub. None si el usuario no existe o no hay red."""
+    try:
+        with urllib.request.urlopen(f"{GITHUB_URL}/{user}.keys", timeout=timeout) as r:
+            body = r.read().decode()
+    except (urllib.error.URLError, OSError):
+        return None
+    return [l.strip() for l in body.splitlines() if re.match(r"^(ssh-|ecdsa-|sk-)", l.strip())]
+
+
+def whoami():
+    """Tu usuario de GitHub: GITHUB_USER, o el de la sesion de `gh`. None si no se sabe."""
+    if os.environ.get("GITHUB_USER"):
+        return os.environ["GITHUB_USER"]
+    if shutil.which("gh"):
+        r = subprocess.run(["gh", "api", "user", "--jq", ".login"], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    return None
+
+
+def my_projects(people, me):
+    """Proyectos en los que puedes pedir: los tuyos, o todos si eres admin."""
+    projects = people.get("projects") or {}
+    if me and me in (people.get("admins") or {}):
+        return list(projects)
+    low = (me or "").lower()
+    return [p for p, d in projects.items() if low in [str(m).lower() for m in (d or {}).get("members") or []]]
+
+
+# --- validacion ---------------------------------------------------------------
+
+def is_todo(v):
+    return isinstance(v, str) and v.startswith("TODO")
+
+
+def validate(platform, people, catalog, profiles, clusters, vms):
+    """Devuelve (errores, avisos). Mismas reglas que las preconditions de requests.tf, y mas."""
+    errs, warns = [], []
+    projects = people.get("projects") or {}
+    admins = people.get("admins") or {}
+    service = people.get("service") or {}
+    prefix = prefix_of(platform)
+    reserved = set(platform["network"].get("reserved_ips", []))
+    flavors = catalog.get("flavors", {})
+    sizes = catalog.get("cluster_sizes", {})
+    vm_profiles = profiles.get("vm_profiles", {})
+
+    # --- projects.yaml ---
+    if not admins:
+        errs.append("projects.yaml: no hay ningun admin")
+    for kind, d in (("admins", admins), ("service", service)):
+        for name, a in d.items():
+            key = (a or {}).get("ssh_key", "")
+            if is_todo(key):
+                warns.append(f"projects.yaml: {kind}.{name}.ssh_key sigue en TODO (el plan fallara hasta rellenarla)")
+            elif not KEY_RE.match(str(key).strip()):
+                errs.append(f"projects.yaml: la ssh_key de {kind}.{name} no es una clave publica real (¿recortada con '...'?)")
+    for name in admins:
+        if not GH_USER_RE.match(name):
+            errs.append(f"projects.yaml: admin '{name}' no es un usuario de GitHub valido como cuenta Linux (<= 32 caracteres)")
+    spans, pools = [], {}
+    for pname, p in projects.items():
+        p = p or {}
+        f = f"projects.yaml: proyecto {pname}"
+        if not NAME_RE.match(pname):
+            errs.append(f"{f}: nombre no valido (minusculas, numeros y '-')")
+        if not p.get("pool"):
+            errs.append(f"{f}: falta `pool`")
+        else:
+            pools.setdefault(p["pool"], []).append(pname)
+        for m in p.get("members") or []:
+            if not GH_USER_RE.match(str(m)):
+                errs.append(f"{f}: miembro '{m}' no es un usuario de GitHub valido (y <= 32 caracteres, por la cuenta Linux)")
+            if str(m).lower() in ("ops", "root", "dataspace", "ubuntu"):
+                errs.append(f"{f}: miembro '{m}' choca con una cuenta del sistema")
+        if not p.get("ranges"):
+            warns.append(f"{f}: sin rangos de VMID/IP; no puede pedir VMs todavia")
+        for rg in p.get("ranges") or []:
+            v0, v1 = rg["vmids"]
+            i0, i1 = rg["ips"]
+            if v0 > v1 or i0 > i1:
+                errs.append(f"{f}: rango al reves: {rg}")
+            if not (100 <= v0 and v1 <= 999999999):
+                errs.append(f"{f}: VMIDs fuera de 100-999999999 (limites de Proxmox): {rg['vmids']}")
+            if not (2 <= i0 and i1 <= 254):
+                errs.append(f"{f}: IPs fuera de .2-.254: {rg['ips']}")
+            hit = sorted(o for o in reserved if i0 <= o <= i1)
+            if hit:
+                warns.append(f"{f}: el rango de IPs incluye IPs reservadas {hit} (el asistente las salta)")
+            spans.append((pname, v0, v1, i0, i1))
+    for a in range(len(spans)):
+        for b in range(a + 1, len(spans)):
+            pa, av0, av1, ai0, ai1 = spans[a]
+            pb, bv0, bv1, bi0, bi1 = spans[b]
+            if pa == pb:
+                continue
+            if av0 <= bv1 and bv0 <= av1:
+                errs.append(f"projects.yaml: los VMIDs de {pa} [{av0}-{av1}] y {pb} [{bv0}-{bv1}] se SOLAPAN")
+            if ai0 <= bi1 and bi0 <= ai1:
+                errs.append(f"projects.yaml: las IPs de {pa} [.{ai0}-.{ai1}] y {pb} [.{bi0}-.{bi1}] se SOLAPAN")
+    for pool, who in pools.items():
+        if len(who) > 1:
+            errs.append(f"projects.yaml: el pool {pool} lo tienen {', '.join(who)}; un pool es de un solo proyecto")
+
+    # --- peticiones ---
+    for name, c in clusters.items():
+        f = f"requests/clusters/{name}.yaml"
+        if not NAME_RE.match(name):
+            errs.append(f"{f}: nombre no valido (minusculas, numeros y '-', sin empezar/terminar en '-')")
+        extra = set(c) - CLUSTER_FIELDS
+        if extra:
+            errs.append(f"{f}: campos desconocidos {sorted(extra)} (validos: {sorted(CLUSTER_FIELDS)})")
+        for req in ("project", "flavor_size", "vmid_base", "ip_base"):
+            if req not in c:
+                errs.append(f"{f}: falta `{req}`")
+        size = c.get("flavor_size")
+        if size not in sizes:
+            errs.append(f"{f}: flavor_size '{size}' no existe. Opciones: {', '.join(sizes)}")
+        else:
+            w = c.get("workers", sizes[size].get("default_workers", 2))
+            mn = sizes[size].get("min_workers", 1)
+            if not isinstance(w, int) or w < mn:
+                errs.append(f"{f}: workers={w!r}; la familia '{size}' exige un entero >= {mn}")
+    for name, v in vms.items():
+        f = f"requests/vms/{name}.yaml"
+        if not NAME_RE.match(name):
+            errs.append(f"{f}: nombre no valido (minusculas, numeros y '-', sin empezar/terminar en '-')")
+        extra = set(v) - VM_FIELDS
+        if extra:
+            errs.append(f"{f}: campos desconocidos {sorted(extra)} (validos: {sorted(VM_FIELDS)})")
+        for req in ("project", "vmid", "ip"):
+            if req not in v:
+                errs.append(f"{f}: falta `{req}`")
+        prof = v.get("profile", "vm")
+        flav = v.get("flavor", "vm-small")
+        if prof not in vm_profiles:
+            errs.append(f"{f}: perfil '{prof}' no existe. Opciones: {', '.join(vm_profiles)}")
+        elif flav not in vm_profiles[prof].get("flavors", []):
+            errs.append(f"{f}: el perfil '{prof}' no admite el flavor '{flav}'. Admite: {', '.join(vm_profiles[prof]['flavors'])}")
+        if prof in vm_profiles and "mvp" in vm_profiles[prof].get("requires", []):
+            errs += [f"{f}: {e}" for e in validate_mvp(v.get("mvp"))]
+        elif "mvp" in v:
+            errs.append(f"{f}: `mvp:` solo vale con un perfil que lo use (dataspace-kind)")
+        if flav not in flavors:
+            errs.append(f"{f}: flavor '{flav}' no existe en catalog/flavors.yaml")
+        ip = str(v.get("ip", ""))
+        try:
+            net = ipaddress.ip_network(f"{prefix}.0/{platform['network'].get('cidr_bits', 24)}", strict=False)
+            if ipaddress.ip_address(ip) not in net:
+                errs.append(f"{f}: la IP {ip} no esta en {net}")
+        except ValueError:
+            if not is_todo(prefix):
+                errs.append(f"{f}: `ip` no es una IP valida: {ip!r}")
+
+    all_vms = expand(platform, catalog, clusters, vms)
+    by_vmid, by_ip, by_name = {}, {}, {}
+    for x in all_vms:
+        by_vmid.setdefault(x["vmid"], []).append(x)
+        by_ip.setdefault(x["octet"], []).append(x)
+        by_name.setdefault(x["name"], []).append(x)
+        p = projects.get(x["project"])
+        if p is None:
+            errs.append(f"{x['file']}: proyecto '{x['project']}' no esta en projects.yaml")
+            continue
+        rgs = p.get("ranges") or []
+        if not any(r["vmids"][0] <= x["vmid"] <= r["vmids"][1] for r in rgs):
+            errs.append(f"{x['file']}: {x['name']} usa el VMID {x['vmid']}, fuera de los rangos de {x['project']}")
+        if not any(r["ips"][0] <= x["octet"] <= r["ips"][1] for r in rgs):
+            errs.append(f"{x['file']}: {x['name']} usa la IP {prefix}.{x['octet']}, fuera de los rangos de {x['project']}")
+        if x["octet"] in reserved:
+            errs.append(f"{x['file']}: {x['name']} usa la IP reservada {prefix}.{x['octet']}")
+    for vmid, xs in by_vmid.items():
+        if len(xs) > 1:
+            errs.append(f"VMID {vmid} repetido: {', '.join(x['name'] + ' (' + x['file'] + ')' for x in xs)}")
+    for octet, xs in by_ip.items():
+        if len(xs) > 1 and octet >= 0:
+            errs.append(f"IP {prefix}.{octet} repetida: {', '.join(x['name'] + ' (' + x['file'] + ')' for x in xs)}")
+    for n, xs in by_name.items():
+        if len(xs) > 1:
+            errs.append(f"Nombre de VM {n} repetido entre {', '.join(x['file'] for x in xs)}")
+
+    for p in glob.glob(os.path.join(ROOT, "requests", "*", "*.yml")):
+        warns.append(f"{os.path.relpath(p, ROOT)}: extension .yml IGNORADA por Terraform; renombralo a .yaml")
+    return errs, warns
+
+
+def validate_mvp(mvp):
+    """Errores del bloque mvp: de una peticion dataspace-kind."""
+    if not isinstance(mvp, dict):
+        return ["el perfil necesita un bloque `mvp:` con `repo`, `ref` y `path` (docs/peticiones.md)"]
+    errs = []
+    extra = set(mvp) - MVP_FIELDS
+    if extra:
+        errs.append(f"mvp: campos desconocidos {sorted(extra)} (validos: {sorted(MVP_FIELDS)})")
+    if not REPO_RE.match(str(mvp.get("repo", ""))):
+        errs.append(f"mvp.repo tiene que ser <owner>/<repo> de GitHub: {mvp.get('repo')!r}")
+    ref = str(mvp.get("ref", ""))
+    if not (SHA_RE.match(ref) or TAG_RE.match(ref)):
+        errs.append(f"mvp.ref tiene que ser un SHA de 40 caracteres o un tag (v1.2.3), nunca una rama: {ref!r}. "
+                    "Una rama cambia sin pasar por un PR, y lo desplegado dejaria de ser lo revisado")
+    path = str(mvp.get("path", ""))
+    if not PATH_RE.match(path) or ".." in path:
+        errs.append(f"mvp.path tiene que ser la carpeta del MVP dentro del repo (p. ej. demo): {path!r}")
+    return errs
+
+
+# --- asignacion -----------------------------------------------------------------
+
+def allocate(platform, people, catalog, clusters, vms, project, count):
+    """Primer bloque de `count` VMIDs y `count` IPs consecutivas libres en los rangos del proyecto."""
+    used = expand(platform, catalog, clusters, vms)
+    used_vmids = {x["vmid"] for x in used}
+    used_ips = {x["octet"] for x in used} | set(platform["network"].get("reserved_ips", []))
+    rgs = (people["projects"].get(project) or {}).get("ranges") or []
+    if not rgs:
+        die(f"El proyecto '{project}' no tiene rangos de VMID/IP en projects.yaml. Pideselos al admin.")
+    vmid = ip = None
+    for r in rgs:
+        for v in range(r["vmids"][0], r["vmids"][1] - count + 2):
+            if all(v + i not in used_vmids for i in range(count)):
+                vmid = v
+                break
+        if vmid is not None:
+            break
+    for r in rgs:
+        for o in range(r["ips"][0], r["ips"][1] - count + 2):
+            if all(o + i not in used_ips for i in range(count)):
+                ip = o
+                break
+        if ip is not None:
+            break
+    if vmid is None or ip is None:
+        die(f"No quedan {count} VMIDs/IPs consecutivos libres en los rangos de {project}. "
+            "Borra lo que no uses (`make remove`) o pide mas rango al admin.")
+    return vmid, ip
+
+
+# --- entrada interactiva ------------------------------------------------------
+
+def interactive():
+    return sys.stdin.isatty() and os.environ.get("NONINTERACTIVE") is None
+
+
+def ask(prompt, default=None, validator=None):
+    if not interactive():
+        if default is None:
+            die(f"Falta el valor de: {prompt} (modo no interactivo: pasalo como argumento)")
+        return default
+    while True:
+        s = input(f"{bold('?')} {prompt}{dim(' [' + str(default) + ']') if default is not None else ''}: ").strip()
+        s = s or (str(default) if default is not None else "")
+        if not s:
+            continue
+        if validator:
+            err = validator(s)
+            if err:
+                print(red("  " + err))
+                continue
+        return s
+
+
+def choose(prompt, options, default=None):
+    """options: lista de (valor, descripcion)."""
+    values = [o[0] for o in options]
+    if not interactive():
+        if default is None:
+            die(f"Falta elegir: {prompt}. Opciones: {', '.join(values)}")
+        return default
+    print(bold("? ") + prompt)
+    for i, (val, desc) in enumerate(options, 1):
+        mark = green("*") if val == default else " "
+        print(f"  {mark} {i}) {bold(val.ljust(20))} {dim(desc)}")
+    while True:
+        s = input(f"  elige 1-{len(options)}{dim(' [' + default + ']') if default else ''}: ").strip()
+        if not s and default:
+            return default
+        if s.isdigit() and 1 <= int(s) <= len(options):
+            return values[int(s) - 1]
+        if s in values:
+            return s
+        print(red("  opcion no valida"))
+
+
+def confirm(prompt, default=False):
+    if not interactive():
+        return os.environ.get("YES") == "1"
+    s = input(f"{bold('?')} {prompt} {dim('[s/N]' if not default else '[S/n]')}: ").strip().lower()
+    return (s in ("s", "si", "sí", "y", "yes")) if s else default
+
+
+def fmt_res(f):
+    return f"{f['cores']} vCPU / {f['memory'] // 1024} GB / {f['disk']} GB"
+
+
+# --- comandos: peticiones -------------------------------------------------------
+
+def cmd_check(args):
+    platform, people, catalog, profiles, clusters, vms = load_all()
+    errs, warns = validate(platform, people, catalog, profiles, clusters, vms)
+    for w in warns:
+        print(yellow("! ") + w)
+    for e in errs:
+        print(red("✗ ") + e)
+    if errs:
+        print(red(f"\n{len(errs)} error(es). Nada de esto llega a Proxmox hasta que se corrija."))
+        sys.exit(1)
+    n = len(expand(platform, catalog, clusters, vms))
+    print(green("✓ ") + f"{len(clusters)} cluster(s) y {len(vms)} VM(s) suelta(s) = {n} VMs; peticiones y projects.yaml correctos.")
+
+
+DOCS_FILE = os.path.join(ROOT, "docs", "peticiones.md")
+DOCS_START = "<!-- catalogo:inicio (generado con `make docs`, no editar a mano) -->"
+DOCS_END = "<!-- catalogo:fin -->"
+
+
+def catalog_markdown(catalog, profiles):
+    out = ["| Flavor | vCPU | RAM | Disco | Para qué |", "|---|:---:|:---:|:---:|---|"]
+    for k, f in catalog["flavors"].items():
+        out.append(f"| `{k}` | {f['cores']} | {f['memory'] // 1024} GB | {f['disk']} GB | {f.get('description', '')} |")
+    out += ["", "| Familia de cluster k3s | Master | Worker | Workers (mín / por defecto) | k3s | Para qué |",
+            "|---|---|---|:---:|---|---|"]
+    for k, s in catalog["cluster_sizes"].items():
+        out.append(f"| `{k}` | `{k}-master` | `{k}-worker` | {s['min_workers']} / {s['default_workers']} | "
+                   f"{s.get('k3s_version', '')} | {s.get('description', '')} |")
+    out += ["", "| Perfil de VM | Flavors admitidos | Bloques obligatorios | Qué instala |", "|---|---|---|---|"]
+    for k, p in profiles["vm_profiles"].items():
+        req = ", ".join(f"`{r}:`" for r in p.get("requires", [])) or "—"
+        out.append(f"| `{k}` | {', '.join('`' + x + '`' for x in p['flavors'])} | {req} | {p['description']} |")
+    return "\n".join(out) + "\n"
+
+
+def cmd_flavors(args):
+    _, _, catalog, profiles, _, _ = load_all()
+    if args.docs or args.check_docs:
+        text = open(DOCS_FILE).read()
+        try:
+            a, b = text.index(DOCS_START) + len(DOCS_START), text.index(DOCS_END)
+        except ValueError:
+            die(f"{os.path.relpath(DOCS_FILE, ROOT)} no tiene los marcadores del catalogo.")
+        new = text[:a] + "\n" + catalog_markdown(catalog, profiles) + text[b:]
+        if args.check_docs:
+            if new != text:
+                die("La tabla del catalogo de docs/peticiones.md no coincide con catalog/. Ejecuta `make docs`.")
+            print(green("✓ ") + "docs/peticiones.md al dia con catalog/.")
+        else:
+            open(DOCS_FILE, "w").write(new)
+            print(green("✓ ") + "Tabla del catalogo de docs/peticiones.md regenerada.")
+        return
+    if args.markdown:
+        print(catalog_markdown(catalog, profiles), end="")
+        return
+    print(bold("FLAVORS"))
+    for k, f in catalog["flavors"].items():
+        print(f"  {bold(k.ljust(22))} {fmt_res(f):<24} {dim(f.get('description', ''))}")
+    print(bold("\nFAMILIAS DE CLUSTER k3s") + dim("  (1 master + N workers)"))
+    for k, s in catalog["cluster_sizes"].items():
+        print(f"  {bold(k.ljust(22))} min {s['min_workers']} workers, por defecto {s['default_workers']}  {dim(s.get('description', ''))}")
+    print(bold("\nPERFILES DE VM"))
+    for k, p in profiles["vm_profiles"].items():
+        print(f"  {bold(k.ljust(22))} {dim(p['description'])}\n  {'':<24}flavors: {', '.join(p['flavors'])}")
+
+
+def pick_project(people, given):
+    me = whoami()
+    mine = my_projects(people, me)
+    projects = people.get("projects") or {}
+    if given:
+        if given not in projects:
+            die(f"El proyecto '{given}' no esta en projects.yaml.")
+        if me and given not in mine:
+            warn_box([f"No figuras como miembro de '{given}' ({me}). El admin rechazara el PR si no te corresponde."])
+        return given
+    if len(mine) == 1:
+        print(dim(f"Proyecto: {mine[0]} (eres miembro como {me})"))
+        return mine[0]
+    opts = mine or list(projects)
+    if not opts:
+        die("No hay proyectos en projects.yaml.")
+    return choose("¿Para que proyecto?" + ("" if me else " (no se quien eres: GITHUB_USER=<tu-usuario> o `gh auth login`)"),
+                  [(p, (projects[p] or {}).get("description", "")) for p in opts])
+
+
+def pick_name(project, given, clusters, vms, kind):
+    def v(s):
+        if not NAME_RE.match(s):
+            return "solo minusculas, numeros y '-' (sin empezar/terminar en '-')"
+        if s in clusters or s in vms:
+            return "ya existe una peticion con ese nombre"
+        return None
+    name = given or ask(f"Nombre del {kind} (sera el hostname; empieza por el proyecto)", f"{project}-", v)
+    err = v(name)
+    if err:
+        die(f"Nombre '{name}': {err}")
+    return name
+
+
+def latest_tag(repo):
+    """Ultimo tag de un repo de GitHub con gh, o None."""
+    if not shutil.which("gh"):
+        return None
+    r = subprocess.run(["gh", "api", f"repos/{repo}/tags", "--jq", ".[0].name"], capture_output=True, text=True)
+    return (r.stdout.strip() or None) if r.returncode == 0 else None
+
+
+def resolve_sha(repo, ref):
+    """SHA completo de un ref (rama o tag) con gh, o None."""
+    if not shutil.which("gh"):
+        return None
+    r = subprocess.run(["gh", "api", f"repos/{repo}/commits/{ref}", "--jq", ".sha"], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 and SHA_RE.match(r.stdout.strip()) else None
+
+
+def cmd_new_vm(args):
+    platform, people, catalog, profiles, clusters, vms = load_all()
+    print(bold("Nueva VM") + dim("  — Ctrl+C para cancelar, no se escribe nada hasta el final\n"))
+    project = pick_project(people, args.project)
+    vp = profiles["vm_profiles"]
+    profile = args.profile or choose("¿Para que es la VM?", [(k, p["description"]) for k, p in vp.items()], "vm")
+    if profile not in vp:
+        die(f"Perfil '{profile}' no existe. Opciones: {', '.join(vp)}")
+    fl = catalog["flavors"]
+    allowed = vp[profile]["flavors"]
+    flavor = args.flavor or choose("¿Que tamaño?", [(f, f"{fmt_res(fl[f])}  {fl[f].get('description', '')}") for f in allowed], allowed[0])
+    if flavor not in allowed:
+        die(f"El perfil '{profile}' no admite '{flavor}'. Admite: {', '.join(allowed)}")
+    name = pick_name(project, args.name, clusters, vms, "VM")
+
+    mvp = None
+    if "mvp" in vp[profile].get("requires", []):
+        d = vp[profile].get("defaults", {}).get("mvp", {})
+        repo = args.mvp_repo or ask("Repositorio de los MVP (owner/repo)", d.get("repo"))
+        path = args.mvp_path or ask("Carpeta del MVP dentro del repo", d.get("path"))
+        ref = args.mvp_ref or ask("Commit (SHA) o tag del MVP; una rama se convierte en su SHA actual",
+                                  latest_tag(repo) or "main")
+        if not (SHA_RE.match(ref) or TAG_RE.match(ref)):
+            sha = resolve_sha(repo, ref)
+            if not sha:
+                die(f"'{ref}' no es un SHA ni un tag, y no pude resolverlo con gh. Pasa el SHA completo (40 caracteres).")
+            print(dim(f"  {ref} -> {sha} (fijado: una rama cambiaria sin PR)"))
+            ref = sha
+        mvp = {"repo": repo, "ref": ref, "path": path}
+        errs = validate_mvp(mvp)
+        if errs:
+            die("; ".join(errs))
+
+    vmid, octet = allocate(platform, people, catalog, clusters, vms, project, 1)
+    ip = f"{prefix_of(platform)}.{octet}"
+    lines = [
+        "# yaml-language-server: $schema=../../schema/vm.schema.json",
+        f"# {vp[profile]['description']}",
+        f"# Generado con `make new-vm`. {fmt_res(fl[flavor])}.",
+        "#",
+        "# ⚠️  No cambies vmid/ip a mano: estan dentro del rango de TU proyecto en",
+        "#     projects.yaml. Renombrar este fichero = destruir y recrear la VM;",
+        "#     borrarlo = destruirla.",
+        f"project: {project}",
+        f"flavor: {flavor}",
+        f"profile: {profile}",
+        f"vmid: {vmid}",
+        f"ip: {ip}",
+    ]
+    if mvp:
+        lines += ["mvp:", f"  repo: {mvp['repo']}",
+                  "  # SHA o tag, nunca una rama: lo desplegado es exactamente lo revisado en el PR.",
+                  f"  ref: {mvp['ref']}", f"  path: {mvp['path']}"]
+    write_request(os.path.join(REQ_VMS, name + ".yaml"), lines, args,
+                  summary=f"{name}: {flavor} ({fmt_res(fl[flavor])}), perfil {profile}, VMID {vmid}, IP {ip}, proyecto {project}")
+
+
+def cmd_new_cluster(args):
+    platform, people, catalog, profiles, clusters, vms = load_all()
+    print(bold("Nuevo cluster k3s") + dim("  — Ctrl+C para cancelar, no se escribe nada hasta el final\n"))
+    project = pick_project(people, args.project)
+    sizes, fl = catalog["cluster_sizes"], catalog["flavors"]
+    opts = []
+    for pname, p in profiles["cluster_profiles"].items():
+        for s in p["sizes"]:
+            m, w = fl[f"{s}-master"], fl[f"{s}-worker"]
+            opts.append((s, f"[{pname}] {sizes[s].get('description', '')} · master {fmt_res(m)} · worker {fmt_res(w)}"))
+    size = args.size or choose("¿Que tipo de cluster?", opts)
+    if size not in sizes:
+        die(f"Familia '{size}' no existe. Opciones: {', '.join(sizes)}")
+    mn, dflt = sizes[size]["min_workers"], sizes[size]["default_workers"]
+    workers = int(args.workers or ask(f"¿Cuantos workers? (minimo {mn})", dflt,
+                                      lambda s: None if s.isdigit() and int(s) >= mn else f"tiene que ser un numero >= {mn}"))
+    if workers < mn:
+        die(f"La familia '{size}' exige minimo {mn} workers.")
+    name = pick_name(project, args.name, clusters, vms, "cluster")
+    n = workers + 1
+    vmid, octet = allocate(platform, people, catalog, clusters, vms, project, n)
+    prefix = prefix_of(platform)
+    m, w = fl[f"{size}-master"], fl[f"{size}-worker"]
+    tot = {k: m[k] + workers * w[k] for k in ("cores", "memory", "disk")}
+    lines = [
+        "# yaml-language-server: $schema=../../schema/cluster.schema.json",
+        f"# Cluster k3s '{size}': 1 master + {workers} workers. Generado con `make new-cluster`.",
+        f"# Total: {fmt_res(tot)}",
+        "#",
+        "# ⚠️  No cambies vmid_base/ip_base a mano: el bloque entero esta dentro del",
+        "#     rango de TU proyecto. Renombrar este fichero = destruir y recrear el",
+        "#     cluster; borrarlo = destruirlo.",
+        f"project: {project}",
+        f"flavor_size: {size}",
+        f"workers: {workers}",
+        f"vmid_base: {vmid}   # ocupa {vmid}-{vmid + workers}",
+        f"ip_base: {octet}      # master = {prefix}.{octet}, workers = .{octet + 1}-.{octet + workers}",
+    ]
+    write_request(os.path.join(REQ_CLUSTERS, name + ".yaml"), lines, args,
+                  summary=f"{name}: {size}, 1+{workers} VMs = {fmt_res(tot)}, VMIDs {vmid}-{vmid + workers}, "
+                          f"IPs {prefix}.{octet}-.{octet + workers}, proyecto {project}")
+
+
+def write_request(path, lines, args, summary):
+    print("\n" + bold("Resumen: ") + summary)
+    warn_box(["Esto consume capacidad COMPARTIDA del homelab. Pide lo que vayas a usar",
+              "y borralo (`make remove NAME=...`) cuando termines."])
+    if not args.yes and not confirm("¿Escribo la peticion?", True):
+        die("Cancelado, no se ha escrito nada.", 0)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    platform, people, catalog, profiles, clusters, vms = load_all()
+    errs, _ = validate(platform, people, catalog, profiles, clusters, vms)
+    if errs:
+        for e in errs:
+            print(red("✗ ") + e)
+        die(f"La peticion se ha escrito en {os.path.relpath(path, ROOT)} pero el repo no valida; corrige lo de arriba.")
+    rel = os.path.relpath(path, ROOT)
+    base = os.path.basename(path)[:-5]
+    print(green("✓ ") + f"Escrito {rel}\n")
+    print(bold("Siguientes pasos") + dim("  (docs/inicio-rapido.md):"))
+    print(f"  1. git switch -c pide-{base} && git add {rel} && git commit -m 'Pide {base}'")
+    print(f"  2. git push -u origin pide-{base}   (origin = TU fork) y abre el PR contra main")
+    print("  3. El PR enseña el plan en un comentario; el admin lo revisa y mergea.")
+    print(f"  4. Tras el deploy:  make ssh NAME={base}")
+
+
+def cmd_remove(args):
+    platform, people, catalog, profiles, clusters, vms = load_all()
+    name = args.name
+    path = os.path.join(REQ_CLUSTERS, name + ".yaml") if name in clusters else os.path.join(REQ_VMS, name + ".yaml")
+    if not os.path.exists(path):
+        die(f"No hay ninguna peticion llamada '{name}'. Mira `make list`.")
+    req = clusters.get(name) or vms.get(name)
+    me = whoami()
+    warn_box([f"Borrar {os.path.relpath(path, ROOT)} DESTRUYE sus VMs en el siguiente deploy, discos incluidos.",
+              "No hay papelera: copia antes lo que necesites de dentro."])
+    if me and req.get("project") not in my_projects(people, me):
+        warn_box([f"La peticion es del proyecto '{req.get('project')}', que no es tuyo. No la borres sin su OK por escrito."])
+    if not args.yes and not confirm(f"¿Borrar la peticion '{name}'?"):
+        die("Cancelado.", 0)
+    os.remove(path)
+    print(green("✓ ") + f"Borrado {os.path.relpath(path, ROOT)}. Commit + PR: en el plan tienen que salir SOLO sus VMs como destroy.")
+
+
+def tf_outputs():
+    r = subprocess.run(["terraform", f"-chdir={TF_DIR}", "output", "-json"], capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    return json.loads(r.stdout or "{}")
+
+
+def cmd_list(args):
+    platform, people, catalog, profiles, clusters, vms = load_all()
+    live = tf_outputs() if args.live else None
+    created = set()
+    if live:
+        created = set((live.get("requests") or {}).get("value", {}).keys())
+    elif args.live:
+        print(yellow("! ") + "No puedo leer el estado (¿TF_TOKEN_app_terraform_io? `make doctor`). Muestro solo lo pedido.\n")
+    prefix = prefix_of(platform)
+    rows = expand(platform, catalog, clusters, vms)
+    print(bold(f"{'VM':<28} {'PROYECTO':<14} {'FLAVOR':<20} {'VMID':<6} {'IP':<16}" + ("ESTADO" if live else "")))
+    for x in rows:
+        st = ""
+        if live:
+            st = green("creada") if x["name"] in created else yellow("pendiente de deploy")
+        print(f"{x['name']:<28} {str(x['project']):<14} {x['flavor']:<20} {x['vmid']:<6} {prefix + '.' + str(x['octet']):<16}{st}")
+    if not rows:
+        print(dim("  (no hay peticiones; crea una con `make new-vm` o `make new-cluster`)"))
+
+
+def port_open(host, port, timeout=3):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def cmd_doctor(args):
+    ok, partial = True, False
+
+    def line(good, msg, fix=""):
+        nonlocal ok, partial
+        ok &= bool(good) or good is None
+        partial |= good is None
+        mark = green("✓") if good else (yellow("!") if good is None else red("✗"))
+        print(f"  {mark} {msg}" + (f"\n      {dim('→ ' + fix)}" if fix and not good else ""))
+
+    platform, people, *_ = load_all()
+    print(bold("Herramientas"))
+    for tool, fix in [("python3", "sudo apt install python3 python3-yaml"), ("ssh", "sudo apt install openssh-client"),
+                      ("git", "sudo apt install git"), ("gh", "https://cli.github.com (para el PR y bajar known_hosts)")]:
+        line(shutil.which(tool) or (None if tool == "gh" else False), tool, fix)
+
+    print(bold("Identidad"))
+    me = whoami()
+    line(me, f"eres '{me}' en GitHub" if me else "no se quien eres", "gh auth login, o export GITHUB_USER=<tu-usuario>")
+    if me:
+        mine = my_projects(people, me)
+        is_admin = me in (people.get("admins") or {})
+        line(bool(mine), f"proyectos: {', '.join(mine) or 'ninguno'}" + (" (admin)" if is_admin else ""),
+             "pide al admin que te añada a `members` de tu proyecto en projects.yaml")
+        keys = github_keys(me)
+        line(bool(keys), f"claves SSH en tu perfil de GitHub: {len(keys or [])}",
+             "GitHub -> Settings -> SSH and GPG keys; con eso entras en tus VMs")
+
+    print(bold("Red"))
+    first_ip = next(iter(platform["proxmox"]["nodes"].values()))
+    line(port_open("github.com", 443), "github.com:443")
+    if not is_todo(first_ip):
+        line(port_open(first_ip, 22) or None, f"red del homelab ({first_ip})", "para make ssh / tunnel hace falta VPN al homelab")
+
+    if me and me in (people.get("admins") or {}):
+        print(bold("Admin: plan/apply en local (break-glass)"))
+        for tool in ("terraform", "ansible-playbook", "jq"):
+            line(shutil.which(tool) or None, tool, "docs/operador.md -> Break-glass")
+        line(bool(os.environ.get("TF_TOKEN_app_terraform_io")) or None, "TF_TOKEN_app_terraform_io (estado en HCP)",
+             "read -rs TF_TOKEN_app_terraform_io && export TF_TOKEN_app_terraform_io")
+        line(bool(os.environ.get("TF_CLOUD_ORGANIZATION")) or None, "TF_CLOUD_ORGANIZATION", "export TF_CLOUD_ORGANIZATION=<org de HCP>")
+        line(bool(os.environ.get("TF_VAR_pm_api_token")) or None, "TF_VAR_pm_api_token",
+             "exportalo desde tu gestor de contraseñas solo para esta sesion")
+        line(os.path.exists(CA_FILE) or None, "terraform/certs/pve-root-ca.pem", "docs/bootstrap.md §3")
+    print()
+    if not ok:
+        print(red("Hay cosas por arreglar (arriba)."))
+    elif partial:
+        print(yellow("Listo para pedir infraestructura. Lo marcado con ! solo hace falta para lo que indica."))
+    else:
+        print(green("Todo listo."))
+
+
+# --- plan / apply -------------------------------------------------------------
+
+def tf(*a, check=True, **kw):
+    r = subprocess.run(["terraform", f"-chdir={TF_DIR}", *a], **kw)
+    if check and r.returncode != 0:
+        die(f"terraform {a[0]} ha fallado (arriba el detalle). `make doctor` revisa lo habitual.", r.returncode)
+    return r
+
+
+def summarize_plan(plan_file=None, markdown=False):
+    """Resumen del plan agrupado por peticion. Devuelve el numero de recursos destruidos/recreados."""
+    _, people, *_ = load_all()
+    pool_project = {(p or {}).get("pool"): name for name, p in (people.get("projects") or {}).items()}
+    r = tf("show", "-json", os.path.basename(plan_file or PLAN_FILE), capture_output=True, text=True)
+    plan = json.loads(r.stdout)
+    groups = {}
+    for rc in plan.get("resource_changes", []):
+        actions = rc["change"]["actions"]
+        if actions in (["no-op"], ["read"]):
+            continue
+        m = re.match(r'module\.(k3s_cluster|standalone_vm)\["([^"]+)"\]', rc["address"])
+        key = (f"cluster {m.group(2)}" if m.group(1) == "k3s_cluster" else f"vm {m.group(2)}") if m else "comun"
+        g = groups.setdefault(key, {"create": 0, "update": 0, "delete": 0, "replace": 0, "names": set(), "projects": set()})
+        kind = ("replace" if "delete" in actions and "create" in actions else
+                "create" if "create" in actions else "delete" if "delete" in actions else "update")
+        g[kind] += 1
+        for side in ("before", "after"):
+            v = rc["change"].get(side) or {}
+            if rc["type"] == "proxmox_virtual_environment_vm":
+                if v.get("name"):
+                    g["names"].add(v["name"])
+                if v.get("pool_id"):
+                    g["projects"].add(pool_project.get(v["pool_id"], v["pool_id"]))
+    n_destroy = sum(g["delete"] + g["replace"] for g in groups.values())
+    if markdown:
+        print("### Resumen del plan\n")
+        if not groups:
+            print("Sin cambios: Proxmox ya coincide con `requests/`.")
+            return 0
+        print("| Petición | Proyecto | Crear | Modificar | Recrear | Destruir | VMs |\n|---|---|:---:|:---:|:---:|:---:|---|")
+        for key, g in sorted(groups.items()):
+            print(f"| `{key}` | {', '.join(sorted(g['projects'])) or '—'} | {g['create'] or ''} | {g['update'] or ''} | "
+                  f"{('**' + str(g['replace']) + '**') if g['replace'] else ''} | {('**' + str(g['delete']) + '**') if g['delete'] else ''} | "
+                  f"{', '.join(sorted(g['names']))} |")
+        if n_destroy:
+            print(f"\n> [!WARNING]\n> El plan **destruye o recrea {n_destroy} recurso(s)**. Los discos se pierden. "
+                  "Comprueba que es solo lo que se ha borrado o renombrado en `requests/`.")
+        return n_destroy
+    if not groups:
+        print(green("✓ Sin cambios: lo que hay en Proxmox ya coincide con requests/."))
+        return 0
+    print(bold("\nRESUMEN DEL PLAN") + dim("  (por peticion)"))
+    for key, g in sorted(groups.items()):
+        parts = []
+        if g["create"]: parts.append(green(f"+{g['create']} crear"))
+        if g["update"]: parts.append(yellow(f"~{g['update']} modificar"))
+        if g["replace"]: parts.append(red(f"-/+{g['replace']} RECREAR"))
+        if g["delete"]: parts.append(red(f"-{g['delete']} DESTRUIR"))
+        print(f"  {bold(key.ljust(30))} {' '.join(parts)}  {dim(', '.join(sorted(g['names'])))}  "
+              f"{dim('proyecto: ' + ','.join(sorted(g['projects']))) if g['projects'] else ''}")
+    if n_destroy:
+        warn_box([f"El plan DESTRUYE o RECREA recursos ({n_destroy}). Los discos se pierden.",
+                  "Comprueba que es SOLO lo que se ha borrado/renombrado en requests/."])
+    return n_destroy
+
+
+def new_vm_names(plan_file):
+    """Nombres de las VMs que el plan crea o reemplaza (para known-hosts --allow-new)."""
+    r = tf("show", "-json", os.path.basename(plan_file), capture_output=True, text=True)
+    out = set()
+    for rc in json.loads(r.stdout).get("resource_changes", []):
+        if rc["type"] == "proxmox_virtual_environment_vm" and "create" in rc["change"]["actions"]:
+            name = (rc["change"].get("after") or {}).get("name")
+            if name:
+                out.add(name)
+    return sorted(out)
+
+
+def ensure_ca_bundle():
+    """SSL_CERT_FILE = CA del sistema + CA del cluster Proxmox (scripts/ca-bundle.sh)."""
+    if os.environ.get("SSL_CERT_FILE"):
+        return
+    r = subprocess.run([os.path.join(ROOT, "scripts", "ca-bundle.sh")], capture_output=True, text=True)
+    if r.returncode != 0:
+        die(r.stderr.strip() or "No pude construir el bundle de CA (scripts/ca-bundle.sh).")
+    os.environ["SSL_CERT_FILE"] = r.stdout.strip()
+
+
+def cmd_plan(args):
+    cmd_check(argparse.Namespace())
+    ensure_ca_bundle()
+    if not os.path.isdir(os.path.join(TF_DIR, ".terraform")):
+        tf("init", "-input=false")
+    tf("plan", "-input=false", "-lock-timeout=5m", f"-out={os.path.basename(PLAN_FILE)}")
+    summarize_plan()
+    print(dim("\nPlan guardado. `make apply` aplica EXACTAMENTE este plan (break-glass: lo normal es el pipeline)."))
+
+
+def cmd_apply(args):
+    if not os.path.exists(PLAN_FILE):
+        die("No hay plan guardado. Primero `make plan` y revisalo.")
+    ensure_ca_bundle()
+    n_destroy = summarize_plan()
+    warn_box(["Aplicar en local es BREAK-GLASS: el camino normal es PR -> merge -> pipeline.",
+              "Apuntalo en docs/operador.md -> Registro de break-glass."])
+    if interactive():
+        word = "destruir" if n_destroy else "aplicar"
+        if input(f"{bold('?')} Escribe '{word}' para continuar: ").strip() != word:
+            die("Cancelado, no se ha aplicado nada.", 0)
+    elif os.environ.get("YES") != "1":
+        die("Modo no interactivo: exporta YES=1 para aplicar.")
+    tf("apply", "-input=false", "-lock-timeout=5m", os.path.basename(PLAN_FILE))
+    os.remove(PLAN_FILE)
+    print(green("✓ Aplicado.") + " Siguiente: `make known-hosts SCAN=1` y `make configure`.")
+
+
+# --- ansible ------------------------------------------------------------------
+
+PLAYBOOK_ORDER = ["site", "k3s", "monitoring", "dataspace-kind"]
+
+
+def cmd_configure(args):
+    platform, people, catalog, profiles, clusters, vms = load_all()
+    kh = os.path.abspath(args.known_hosts or os.path.join(ROOT, "known_hosts"))
+    if not os.path.exists(kh) or os.path.getsize(kh) == 0:
+        die(f"No hay claves de host en {kh}. Ansible verifica SIEMPRE la clave de cada VM (docs/seguridad.md R-04): "
+            "en CI las deja el job known-hosts; en local, `make known-hosts` (o SCAN=1) y --known-hosts.")
+    r = subprocess.run([os.path.join(ANSIBLE_DIR, "inventory", "generate_inventory.sh")])
+    if r.returncode != 0:
+        die("No se pudo generar el inventario.")
+    if args.name:
+        if args.name in clusters:
+            books = profiles["cluster_profiles"][cluster_profile(profiles, clusters[args.name]["flavor_size"])]["playbooks"]
+            limit = args.name.replace("-", "_") + "_server:" + args.name.replace("-", "_") + "_agent"
+        elif args.name in vms:
+            books = profiles["vm_profiles"][vms[args.name].get("profile", "vm")]["playbooks"]
+            limit = args.name
+        else:
+            die(f"No hay ninguna peticion '{args.name}'. Mira `make list`.")
+    else:
+        used = set()
+        for c in clusters.values():
+            used |= set(profiles["cluster_profiles"][cluster_profile(profiles, c["flavor_size"])]["playbooks"])
+        for v in vms.values():
+            used |= set(profiles["vm_profiles"][v.get("profile", "vm")]["playbooks"])
+        books, limit = [b for b in PLAYBOOK_ORDER if b in used], None
+    books = [b for b in PLAYBOOK_ORDER if b in books]
+    env = dict(os.environ)
+    # Verificacion estricta contra las claves publicadas, nunca ~/.ssh/known_hosts.
+    env["ANSIBLE_HOST_KEY_CHECKING"] = "True"
+    env["ANSIBLE_SSH_ARGS"] = (f"-o ControlMaster=auto -o ControlPersist=60s -o StrictHostKeyChecking=yes "
+                               f"-o UserKnownHostsFile={kh}")
+    env.setdefault("ANSIBLE_CONFIG", os.path.join(ANSIBLE_DIR, "ansible.cfg"))
+    for b in books:
+        cmd = ["ansible-playbook", f"playbooks/{b}.yml"] + (["--limit", limit] if limit else []) + args.extra
+        print(bold(f"\n▶ {' '.join(cmd)}"))
+        if subprocess.run(cmd, cwd=ANSIBLE_DIR, env=env).returncode != 0:
+            die(f"Ha fallado playbooks/{b}.yml (arriba el detalle). Se puede relanzar: los playbooks son idempotentes.")
+    print(green("\n✓ Configurado."))
+
+
+def vm_ip(name):
+    platform, people, catalog, profiles, clusters, vms = load_all()
+    for x in expand(platform, catalog, clusters, vms):
+        if x["name"] == name or (name in clusters and x["name"] == f"{name}-master"):
+            return f"{prefix_of(platform)}.{x['octet']}"
+    die(f"No hay ninguna VM '{name}'. Mira `make list`.")
+
+
+def ssh_user():
+    """Tu cuenta Linux en las VMs: tu usuario de GitHub en minusculas."""
+    if os.environ.get("VM_USER"):
+        return os.environ["VM_USER"]
+    me = whoami()
+    return me.lower() if me else "ops"
+
+
+# --- claves de host -----------------------------------------------------------
+
+def all_vm_ips():
+    platform, people, catalog, profiles, clusters, vms = load_all()
+    prefix = prefix_of(platform)
+    return {x["name"]: f"{prefix}.{x['octet']}" for x in expand(platform, catalog, clusters, vms) if x["octet"] >= 0}
+
+
+def keyscan(ips, wait=0):
+    """{ip: [lineas known_hosts]}. Reintenta hasta `wait` s las que aun no responden
+    (en el pipeline, las VMs recien creadas tardan en levantar sshd)."""
+    found, deadline = {}, time.time() + wait
+    while True:
+        for ip in [i for i in ips if i not in found]:
+            r = subprocess.run(["ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", ip], capture_output=True, text=True)
+            lines = [l for l in r.stdout.splitlines() if l and not l.startswith("#")]
+            if lines:
+                found[ip] = lines
+        if len(found) == len(ips) or time.time() >= deadline:
+            return found
+        time.sleep(10)
+
+
+def fingerprints(path):
+    r = subprocess.run(["ssh-keygen", "-lf", path], capture_output=True, text=True)
+    return [l.split() for l in r.stdout.splitlines() if l.strip()]   # [bits, SHA256:.., host, (TYPE)]
+
+
+def github_repo():
+    """owner/repo del repo central: GITHUB_REPOSITORY en CI; en local, el remote upstream u origin."""
+    if os.environ.get("GITHUB_REPOSITORY"):
+        return os.environ["GITHUB_REPOSITORY"]
+    for remote in ("upstream", "origin"):
+        r = subprocess.run(["git", "-C", ROOT, "remote", "get-url", remote], capture_output=True, text=True)
+        m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$", r.stdout.strip())
+        if m:
+            return m.group(1)
+    return None
+
+
+def refresh_known_hosts(force=False):
+    """Baja el artefacto known_hosts del ultimo deploy correcto de main. True si hay fichero."""
+    if not force and os.path.exists(KNOWN_HOSTS) and time.time() - os.path.getmtime(KNOWN_HOSTS) < KNOWN_HOSTS_MAX_AGE:
+        return True
+    repo = github_repo()
+    if not shutil.which("gh") or not repo:
+        if force:
+            print(yellow("!") + " Hace falta `gh` (autenticado) y un remote de GitHub para bajar las claves de host.")
+        return os.path.exists(KNOWN_HOSTS)
+    # El ultimo artefacto known_hosts de main (aunque ese deploy fallara despues, en configure).
+    r = subprocess.run(["gh", "api", f"repos/{repo}/actions/artifacts?name={KNOWN_HOSTS_ARTIFACT}&per_page=20", "--jq",
+                        '[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == "main")]'
+                        ' | sort_by(.created_at) | last | .id // empty'], capture_output=True, text=True)
+    art = r.stdout.strip()
+    if r.returncode != 0 or not art:
+        print(yellow("!") + " El pipeline aun no ha publicado claves de host." + dim(" Mientras: make known-hosts SCAN=1"))
+        return os.path.exists(KNOWN_HOSTS)
+    import io
+    import tempfile
+    import zipfile
+    with tempfile.TemporaryDirectory() as tmpd:
+        r = subprocess.run(["gh", "api", f"repos/{repo}/actions/artifacts/{art}/zip"], capture_output=True)
+        try:
+            zipfile.ZipFile(io.BytesIO(r.stdout)).extract("known_hosts", tmpd)
+        except (zipfile.BadZipFile, KeyError):
+            print(yellow("!") + f" No pude bajar las claves de host (artefacto {art}): {r.stderr.decode().strip()}")
+            return os.path.exists(KNOWN_HOSTS)
+        with open(os.path.join(tmpd, "known_hosts")) as f:
+            lines = [l for l in f.read().splitlines() if re.match(r"^[0-9.]+ (ssh-|ecdsa-)\S+ AAAA", l)]
+    if not lines:
+        print(yellow("!") + " El fichero de claves publicado esta vacio o no tiene el formato esperado.")
+        return os.path.exists(KNOWN_HOSTS)
+    os.makedirs(os.path.dirname(KNOWN_HOSTS), exist_ok=True)
+    tmp = KNOWN_HOSTS + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, KNOWN_HOSTS)
+    return True
+
+
+def ssh_opts(ip):
+    """Opciones de ssh para entrar en una VM con las claves de host publicadas."""
+    refresh_known_hosts()
+    if os.path.exists(KNOWN_HOSTS) and subprocess.run(
+            ["ssh-keygen", "-F", ip, "-f", KNOWN_HOSTS], capture_output=True).returncode == 0:
+        return ["-o", f"UserKnownHostsFile={KNOWN_HOSTS}", "-o", "StrictHostKeyChecking=yes"]
+    print(dim(f"  Sin clave de host publicada para {ip}: ssh te preguntara. Compara la huella con"
+              " `make known-hosts` antes de responder yes."))
+    return []
+
+
+def parse_known_hosts(path):
+    """{ip: {tipo: clave}} de un fichero known_hosts sin hashear."""
+    out = {}
+    if path and os.path.exists(path):
+        for l in open(path):
+            parts = l.split()
+            if len(parts) >= 3 and not l.startswith("#"):
+                out.setdefault(parts[0], {})[parts[1]] = parts[2]
+    return out
+
+
+def enforce_pinned(found, ips, pinned_path, allow_new):
+    """TOFU solo la primera vez (docs/seguridad.md, R-04).
+
+    Una IP que ya estaba en las claves publicadas por el deploy anterior tiene que
+    presentar la MISMA clave, salvo que su VM se haya creado o recreado en este
+    deploy (`allow_new`: nombres que el plan crea o reemplaza). Si no coincide, se
+    para: o es una suplantacion o alguien recreo la VM fuera del pipeline
+    (docs/runbooks/clave-de-host-cambiada.md). Para las IPs que no responden se
+    conserva la clave anterior, asi un VM apagada no pierde su clave publicada.
+    """
+    pinned = parse_known_hosts(pinned_path)
+    new_ips = {ips[n] for n in allow_new if n in ips}
+    bad = []
+    for ip, lines in found.items():
+        if ip not in pinned or ip in new_ips:
+            continue
+        now = {l.split()[1]: l.split()[2] for l in lines if len(l.split()) >= 3}
+        common = set(now) & set(pinned[ip])
+        if not common or any(now[t] != pinned[ip][t] for t in common):
+            name = next((n for n, i in ips.items() if i == ip), "?")
+            bad.append(f"{name} ({ip})")
+    if bad:
+        die("La clave de host de " + ", ".join(bad) + " NO coincide con la publicada y su VM no se ha creado en este"
+            " deploy. Puede ser una suplantacion (MITM) o una VM recreada fuera del pipeline. No se sigue."
+            " Runbook: docs/runbooks/clave-de-host-cambiada.md")
+    for ip in set(ips.values()) - set(found):
+        if ip in pinned and ip not in new_ips:
+            found[ip] = [f"{ip} {t} {k}" for t, k in pinned[ip].items()]
+    kept = len(set(pinned) & set(found) - new_ips)
+    print(dim(f"  Claves comprobadas contra {pinned_path}: {kept} conocidas (verificadas o conservadas), {len(set(found) - set(pinned) | (new_ips & set(found)))} nuevas (TOFU)."))
+    return found
+
+
+def cmd_known_hosts(args):
+    out = args.output or KNOWN_HOSTS
+    if args.scan:
+        ips = all_vm_ips()
+        found = keyscan(sorted(set(ips.values())), wait=args.wait)
+        if args.pinned:
+            found = enforce_pinned(found, ips, args.pinned, args.allow_new)
+        if os.path.dirname(out):
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w") as f:
+            f.write("".join(l + "\n" for ip in sorted(found) for l in found[ip]))
+        for name, ip in sorted(ips.items(), key=lambda kv: kv[1]):
+            print((green("✓ ") if ip in found else yellow("! ")) + f"{name} ({ip})"
+                  + ("" if ip in found else dim("  no responde: ¿aun no existe o arrancando?")))
+        print(dim("Leidas por ssh-keyscan (TOFU). En CI se leen dentro de la red minutos despues de crear las VMs."
+                  f" Para verificar una: consola de Proxmox -> ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub  → {out}"))
+        if ips and not found:
+            die("Ninguna VM ha respondido.")
+        if args.require_all and len(found) < len(set(ips.values())):
+            die("Faltan VMs por responder: Ansible no podria verificarlas. Mira arriba cuales.")
+    elif not refresh_known_hosts(force=True):
+        die("No hay claves de host. Sin pipeline todavia: make known-hosts SCAN=1")
+    else:
+        print(green("✓ ") + f"Claves de host del pipeline en {KNOWN_HOSTS}")
+    names = {ip: n for n, ip in all_vm_ips().items()}
+    if os.path.exists(out):
+        for bits, fp, host, typ in (f[:4] for f in fingerprints(out) if len(f) >= 4):
+            if typ == "(ED25519)":
+                print(f"  {names.get(host, '?'):<24} {host:<15} {fp}")
+
+
+def cmd_ssh(args):
+    ip = vm_ip(args.name)
+    os.execvp("ssh", ["ssh", *ssh_opts(ip), f"{ssh_user()}@{ip}"])
+
+
+# Donde deja el rol dataspace_mvp cada MVP (cuenta de servicio `dataspace`).
+MVP_ENV = "/home/dataspace/dataspace-mvp/{path}/scripts/herramientas/mvp.env"
+
+
+def remote_mvp_env(ip, path):
+    """KIND_IP, ENVOY_PORT, PREFIJO... del MVP desplegado en la VM (lee su mvp.env)."""
+    r = subprocess.run(["ssh", *ssh_opts(ip), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                        f"{ssh_user()}@{ip}", "cat " + MVP_ENV.format(path=path)],
+                       capture_output=True, text=True, timeout=30)
+    return dict(re.findall(r"(?m)^([A-Z_]+)=['\"]?([^'\"\n]*)['\"]?$", r.stdout)) if r.returncode == 0 else {}
+
+
+def local_port_problem(port):
+    """Por que no se puede abrir ese puerto en este equipo (p. ej. lo usa un kind local), o None."""
+    import errno
+    for fam, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        try:
+            with socket.socket(fam, socket.SOCK_STREAM) as s:
+                s.bind((host, port))
+        except OSError as e:
+            if e.errno == errno.EADDRINUSE:
+                return "ocupado"
+            if e.errno == errno.EACCES:
+                return "<1024: exige sudo"
+    return None
+
+
+def cmd_tunnel(args):
+    _, _, _, _, clusters, vms = load_all()
+    v = vms.get(args.name)
+    if not v or not v.get("mvp"):
+        die(f"'{args.name}' no es una VM con MVP (perfil dataspace-kind). Para otras: make ssh NAME={args.name}")
+    ip = vm_ip(args.name)
+    env = remote_mvp_env(ip, v["mvp"]["path"])
+    if not env:
+        die(f"No pude leer el MVP en {args.name}. ¿Ya se ha desplegado? (make ssh NAME={args.name})")
+    kind_ip, prefix = env.get("KIND_IP", "127.0.0.1"), env.get("PREFIJO", "")
+    try:
+        http = int(os.environ.get("HTTP_PORT", "8080"))
+        envoy_remote = int(env.get("ENVOY_PORT", "8081"))
+        envoy = int(os.environ.get("ENVOY_PORT", str(envoy_remote)))
+    except ValueError:
+        die("HTTP_PORT y ENVOY_PORT tienen que ser numeros de puerto.")
+    bad = [(var, p, why) for var, p in (("HTTP_PORT", http), ("ENVOY_PORT", envoy)) if (why := local_port_problem(p))]
+    if bad:
+        # ssh solo avisaria y seguiria: el navegador acabaria en lo que ya escucha ahi
+        # (tipicamente un kind local) sin que nadie se entere.
+        die("No puedo abrir estos puertos locales:\n" + "\n".join(f"  {p} ({why}): cambialo con {var}=<otro>" for var, p, why in bad))
+    print(bold(f"Tunel al MVP de {args.name} ({ip}). Ctrl+C para cerrarlo."))
+    print(f"  Entrada (Traefik):   http://localhost:{http}{prefix}/<participante>/cp   (rutas: README.md del MVP)")
+    if env.get("OBSERVABILIDAD"):
+        print(f"  Observabilidad:      http://localhost:{http}{prefix}/kibana/   http://localhost:{http}{prefix}/jaeger/")
+    print(f"  Descargas PULL:      http://localhost:{envoy}/flows/<id>")
+    print(dim(f"  El MVP escucha en {kind_ip} DENTRO de la VM: el tunel es la forma de entrar, no se expone a la red."))
+    sys.stdout.flush()   # execvp no vacia el buffer
+    fwd = ["-L", f"{http}:{kind_ip}:80", "-L", f"{envoy}:{kind_ip}:{envoy_remote}"]
+    os.execvp("ssh", ["ssh", *ssh_opts(ip), "-N", "-o", "ExitOnForwardFailure=yes", *fwd, f"{ssh_user()}@{ip}"])
+
+
+def cmd_kubeconfig(args):
+    platform, people, catalog, profiles, clusters, vms = load_all()
+    ip = vm_ip(args.name)
+    out = os.path.join(ANSIBLE_DIR, "kubeconfigs", f"{args.name}.yaml")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    if args.name in clusters:
+        remote, server = "sudo cat /etc/rancher/k3s/k3s.yaml", f"https://{ip}:6443"
+    else:
+        remote, server = "kind get kubeconfig --name \"$(kind get clusters | head -1)\"", None
+    r = subprocess.run(["ssh", *ssh_opts(ip), f"{ssh_user()}@{ip}", remote], capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"No pude leer el kubeconfig de {args.name}: {r.stderr.strip()}")
+    cfg = r.stdout
+    if server:
+        cfg = re.sub(r"server: https://127\.0\.0\.1:6443", f"server: {server}", cfg)
+    else:
+        m = re.search(r"server: https://127\.0\.0\.1:(\d+)", cfg)
+        if m:
+            print(dim(f"kind: la API escucha en 127.0.0.1:{m.group(1)} de la VM. Abre antes:  "
+                      f"ssh -N -L {m.group(1)}:127.0.0.1:{m.group(1)} {ssh_user()}@{ip}"))
+    with open(out, "w") as f:
+        f.write(cfg)
+    os.chmod(out, 0o600)
+    print(green("✓ ") + f"{os.path.relpath(out, ROOT)}  →  export KUBECONFIG={out}")
+    warn_box(["Es un kubeconfig de ADMIN del cluster: no lo subas al repo ni lo compartas por chat."])
+
+
+# --- admin: Proxmox y preflight ------------------------------------------------
+
+# Privilegios del token de escritura (Proxmox VE 9). Solo lo que usa el repo:
+# crear/configurar/borrar VMs, asignar disco, descargar la imagen
+# (Datastore.AllocateTemplate + Sys.AccessNetwork en el nodo, en vez de Sys.Modify
+# en "/") y usar el bridge (SDN.Use). Detalle por privilegio: docs/credenciales.md.
+APPLY_PRIVS = ("VM.Allocate VM.Audit VM.Clone VM.Config.CDROM VM.Config.CPU VM.Config.Cloudinit VM.Config.Disk "
+               "VM.Config.HWType VM.Config.Memory VM.Config.Network VM.Config.Options VM.GuestAgent.Audit VM.PowerMgmt "
+               "Pool.Audit Datastore.AllocateSpace Datastore.AllocateTemplate Datastore.Audit SDN.Use Sys.Audit Sys.AccessNetwork")
+
+
+def cmd_proxmox_acl(args):
+    """Imprime los comandos pveum (idempotentes) para los tokens y los pools."""
+    platform, people, *_ = load_all()
+    px = platform["proxmox"]
+    pools = [(p or {}).get("pool") for p in (people.get("projects") or {}).values() if (p or {}).get("pool")]
+    paths = ([f"/pool/{p}" for p in pools] + [f"/storage/{px['datastore']}", f"/storage/{px['image_datastore']}",
+             f"/sdn/zones/{px.get('sdn_zone', 'localnetwork')}"] + [f"/nodes/{n}" for n in px["nodes"]])
+    print("# Generado por `make proxmox-acl` desde homelab.yaml + projects.yaml. Ejecutar como root en un nodo.")
+    print("# Idempotente: se puede repetir tras dar de alta un proyecto. Detalle: docs/credenciales.md")
+    print("set -e")
+    print(f"pveum role add IaCApply -privs '{APPLY_PRIVS}' 2>/dev/null || pveum role modify IaCApply -privs '{APPLY_PRIVS}'")
+    print("pveum user add iac@pve -comment 'homelab-iac (solo tokens, sin password)' 2>/dev/null || true")
+    for p in pools:
+        print(f"pveum pool add {p} 2>/dev/null || true")
+    print("# Tokens con privsep=1: sus permisos son SOLO las ACL de abajo, no los del usuario.")
+    print("pveum user token add iac@pve apply --privsep 1 2>/dev/null && echo '^ guarda el secreto de apply: sale UNA vez' || true")
+    print("pveum user token add iac@pve plan --privsep 1 2>/dev/null && echo '^ guarda el secreto de plan: sale UNA vez' || true")
+    for path in paths:
+        print(f"pveum acl modify {path} -token 'iac@pve!apply' -role IaCApply")
+        print(f"pveum acl modify {path} -token 'iac@pve!plan' -role PVEAuditor")
+    print("# Comprobacion: ninguna ACL de estos tokens en '/'")
+    print("if pveum acl list --output-format json | grep -q '\"path\":\"/\",[^}]*iac@pve'; then echo 'FALLO: hay ACL en /'; else echo 'OK: sin ACL en /'; fi")
+
+
+def cmd_preflight(args):
+    """Comprueba que la configuracion externa (docs/bootstrap.md) esta hecha."""
+    platform, people, *_ = load_all()
+    fails = []
+
+    def line(good, msg, fix=""):
+        print(f"  {green('✓') if good else (yellow('!') if good is None else red('✗'))} {msg}"
+              + (f"\n      {dim('→ ' + fix)}" if fix and not good else ""))
+        if good is False:
+            fails.append(msg)
+
+    print(bold("Ficheros del repo"))
+    todos = []
+    for fname in ("homelab.yaml", "projects.yaml"):
+        for n, l in enumerate(open(os.path.join(ROOT, fname)), 1):
+            if "TODO" in l.split("#")[0]:
+                todos.append(f"{fname}:{n}")
+    line(not todos, "sin valores TODO en homelab.yaml / projects.yaml", ", ".join(todos[:6]) + (" ..." if len(todos) > 6 else ""))
+    ca_ok = os.path.exists(CA_FILE) and "BEGIN CERTIFICATE" in open(CA_FILE).read()
+    line(ca_ok, "terraform/certs/pve-root-ca.pem", "docs/bootstrap.md §3: copia /etc/pve/pve-root-ca.pem de un nodo")
+
+    print(bold("Proxmox (desde esta maquina)"))
+    ep = platform["proxmox"]["endpoint"]
+    if ca_ok and not is_todo(ep) and "TODO" not in ep:
+        ensure_ca_bundle()
+        r = subprocess.run(["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "8",
+                            "--cacert", os.environ["SSL_CERT_FILE"], ep.rstrip("/") + "/api2/json/version"],
+                           capture_output=True, text=True)
+        code = r.stdout.strip()
+        line(code in ("200", "401"), f"TLS verificado contra {ep} (HTTP {code or r.stderr.strip()[:80]})",
+             "el nombre de `endpoint` tiene que estar en el SAN del certificado del nodo")
+        tok = os.environ.get("TF_VAR_pm_api_token")
+        if tok:
+            import ssl
+            req = urllib.request.Request(ep.rstrip("/") + "/api2/json/access/permissions",
+                                         headers={"Authorization": f"PVEAPIToken={tok}"})
+            try:
+                ctx = ssl.create_default_context(cafile=os.environ["SSL_CERT_FILE"])
+                perms = json.load(urllib.request.urlopen(req, timeout=10, context=ctx))["data"]
+                line(not perms.get("/"), f"el token no tiene permisos en '/' ({len(perms)} rutas)",
+                     "make proxmox-acl y quita la ACL de '/'")
+                write = any(k.startswith("VM.Allocate") for v in perms.values() for k in v)
+                print(dim(f"      token de {'ESCRITURA' if write else 'solo lectura'}: rutas {', '.join(sorted(perms))}"))
+            except (urllib.error.URLError, OSError, KeyError, ValueError) as e:
+                line(False, f"no pude leer los permisos del token: {e}")
+        else:
+            line(None, "permisos del token (exporta TF_VAR_pm_api_token para comprobarlos)")
+    else:
+        line(None, "TLS y permisos: faltan endpoint o CA")
+
+    print(bold("GitHub"))
+    repo = github_repo()
+    if not (shutil.which("gh") and repo):
+        line(None, "sin gh o sin remote de GitHub: no compruebo rulesets, environments ni runners")
+    else:
+        def gh(path):
+            r = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+            return json.loads(r.stdout) if r.returncode == 0 else None
+        info = gh(f"repos/{repo}") or {}
+        line(info.get("owner", {}).get("type") == "Organization", f"{repo} es de una organizacion",
+             "docs/bootstrap.md §1 (roles y grupos de runners necesitan una organizacion)")
+        line(info.get("private") is True, "repo privado")
+        rules = gh(f"repos/{repo}/rules/branches/main") or []
+        kinds = {r.get("type") for r in rules}
+        line("pull_request" in kinds, "ruleset en main: PR obligatorio", "docs/bootstrap.md §4")
+        line("required_status_checks" in kinds, "ruleset en main: checks obligatorios", "docs/bootstrap.md §4")
+        line("non_fast_forward" in kinds, "ruleset en main: sin force-push", "docs/bootstrap.md §4")
+        envs = {e["name"]: e for e in (gh(f"repos/{repo}/environments") or {}).get("environments", [])}
+        for env in ("production", "plan"):
+            line(env in envs, f"environment '{env}'", "docs/bootstrap.md §5")
+        if "production" in envs:
+            pol = envs["production"].get("deployment_branch_policy") or {}
+            line(bool(pol.get("custom_branch_policies") or pol.get("protected_branches")),
+                 "production solo despliega desde main", "Environments -> production -> Deployment branches: main")
+            sec = {s["name"] for s in (gh(f"repos/{repo}/environments/production/secrets") or {}).get("secrets", [])}
+            for s in ("PM_APPLY_TOKEN", "TF_API_TOKEN", "ANSIBLE_SSH_KEY", "PLAN_ENC_KEY",
+                      "GHCR_READ_TOKEN", "DATASPACE_MVP_DEPLOY_KEY"):
+                line(s in sec, f"secreto production/{s}", "docs/credenciales.md")
+        if "plan" in envs:
+            sec = {s["name"] for s in (gh(f"repos/{repo}/environments/plan/secrets") or {}).get("secrets", [])}
+            for s in ("PM_PLAN_TOKEN", "TF_API_TOKEN"):
+                line(s in sec, f"secreto plan/{s}", "docs/credenciales.md")
+        repo_secrets = {s["name"] for s in (gh(f"repos/{repo}/actions/secrets") or {}).get("secrets", [])}
+        line(not repo_secrets, "ningun secreto a nivel de repo (todos en environments)",
+             f"muevelos a un environment: {', '.join(sorted(repo_secrets))}")
+    print()
+    if fails:
+        die(f"{len(fails)} comprobacion(es) fallidas.")
+    print(green("Preflight correcto.") + dim(" (lo marcado con ! no se ha podido comprobar desde aqui)"))
+
+
+# --- main ---------------------------------------------------------------------
+
+def main():
+    p = argparse.ArgumentParser(prog="iac", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("check", help="valida peticiones y projects.yaml (sin credenciales)").set_defaults(f=cmd_check)
+    s = sub.add_parser("flavors", help="catalogo de tamaños y perfiles")
+    s.add_argument("--markdown", action="store_true")
+    s.add_argument("--docs", action="store_true", help="regenera la tabla de docs/peticiones.md")
+    s.add_argument("--check-docs", action="store_true", help="falla si la tabla de docs/peticiones.md no esta al dia")
+    s.set_defaults(f=cmd_flavors)
+
+    s = sub.add_parser("new-vm", help="asistente: pide una VM")
+    for a in ("name", "project", "flavor", "profile", "mvp-repo", "mvp-ref", "mvp-path"):
+        s.add_argument(f"--{a}")
+    s.add_argument("-y", "--yes", action="store_true")
+    s.set_defaults(f=cmd_new_vm)
+
+    s = sub.add_parser("new-cluster", help="asistente: pide un cluster k3s")
+    for a in ("name", "project", "size", "workers"):
+        s.add_argument(f"--{a}")
+    s.add_argument("-y", "--yes", action="store_true")
+    s.set_defaults(f=cmd_new_cluster)
+
+    s = sub.add_parser("remove", help="borra una peticion (sus VMs se destruyen en el siguiente deploy)")
+    s.add_argument("name")
+    s.add_argument("-y", "--yes", action="store_true")
+    s.set_defaults(f=cmd_remove)
+
+    s = sub.add_parser("list", help="lo pedido (y con --live, si ya esta creado)")
+    s.add_argument("--live", action="store_true")
+    s.set_defaults(f=cmd_list)
+
+    sub.add_parser("doctor", help="comprueba herramientas, identidad y red").set_defaults(f=cmd_doctor)
+    sub.add_parser("plan", help="(admin, break-glass) terraform plan + resumen").set_defaults(f=cmd_plan)
+    sub.add_parser("apply", help="(admin, break-glass) aplica el plan guardado").set_defaults(f=cmd_apply)
+    s = sub.add_parser("plan-summary", help="resumen de un plan guardado")
+    s.add_argument("--plan", help="fichero de plan dentro de terraform/ (por defecto tfplan)")
+    s.add_argument("--markdown", action="store_true", help="para el comentario del PR / el resumen del job")
+    s.set_defaults(f=lambda a: summarize_plan(os.path.join(TF_DIR, a.plan) if a.plan else None, a.markdown))
+
+    s = sub.add_parser("plan-new-vms", help="VMs que un plan guardado crea o reemplaza (una por linea)")
+    s.add_argument("--plan", default="tfplan")
+    s.set_defaults(f=lambda a: print("\n".join(new_vm_names(os.path.join(TF_DIR, a.plan)))))
+
+    s = sub.add_parser("configure", help="inventario + playbooks segun perfil; lo que sobre va a ansible-playbook")
+    s.add_argument("--name")
+    s.add_argument("--known-hosts", help="fichero de claves de host (por defecto ./known_hosts del repo)")
+    s.set_defaults(f=cmd_configure)
+
+    s = sub.add_parser("known-hosts", help="claves de host de las VMs (las publica el pipeline)")
+    s.add_argument("--scan", action="store_true", help="leerlas de las VMs con ssh-keyscan (TOFU)")
+    s.add_argument("--wait", type=int, default=0, help="con --scan: segundos esperando a las que no responden")
+    s.add_argument("--output", help="con --scan: fichero de salida (por defecto el que usa make ssh)")
+    s.add_argument("--require-all", action="store_true", help="con --scan: falla si alguna VM no responde")
+    s.add_argument("--pinned", help="con --scan: claves publicadas antes; una IP conocida tiene que coincidir")
+    s.add_argument("--allow-new", default="", type=lambda v: [x for x in v.replace(",", " ").split() if x],
+                   help="con --pinned: VMs creadas/recreadas en este deploy (pueden traer clave nueva)")
+    s.set_defaults(f=cmd_known_hosts)
+
+    for c, fn, h in (("ssh", cmd_ssh, "ssh a una VM"), ("tunnel", cmd_tunnel, "tunel al MVP de una VM dataspace-kind"),
+                     ("kubeconfig", cmd_kubeconfig, "trae el kubeconfig")):
+        s = sub.add_parser(c, help=h)
+        s.add_argument("name")
+        s.set_defaults(f=fn)
+
+    sub.add_parser("proxmox-acl", help="(admin) comandos pveum de tokens, pools y ACL").set_defaults(f=cmd_proxmox_acl)
+    sub.add_parser("preflight", help="(admin) comprueba la configuracion externa").set_defaults(f=cmd_preflight)
+
+    # Lo que el CLI no conoce se pasa tal cual a ansible-playbook en `configure`
+    # (p. ej. -e mvp_recreate=true); en el resto de comandos es un error.
+    args, unknown = p.parse_known_args()
+    if unknown and args.cmd != "configure":
+        p.error(f"argumentos no reconocidos: {' '.join(unknown)}")
+    args.extra = [a for a in unknown if a != "--"]
+    try:
+        args.f(args)
+    except KeyboardInterrupt:
+        print("\nCancelado.")
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()

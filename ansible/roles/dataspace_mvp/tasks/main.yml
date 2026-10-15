@@ -1,0 +1,299 @@
+---
+# Despliega un MVP de dataspace (teo-devops/dataspace-mvp, generado con dsgen) en
+# kind con SUS PROPIOS scripts. Este rol no reimplementa nada del MVP: lo clona en
+# el ref fijado, le da credenciales solo mientras las necesita y vigila el
+# despliegue. Detalle y decisiones: docs/dataspace.md.
+#
+#   - normal                     -> scripts/ciclo-de-vida/kind-up.sh (idempotente: crea
+#                                   lo que falte y reaplica el resto, no borra nada)
+#   - -e mvp_recreate=true       -> kind-down.sh + kind-up.sh (BORRA el cluster)
+#
+# Credenciales: la deploy key y el token de ghcr llegan por el entorno del runner,
+# se escriben en ficheros temporales de la cuenta de servicio y se BORRAN siempre
+# al final (bloque always), falle o no. Si un run se corta a medias (job
+# cancelado), el siguiente los borra al empezar.
+
+- name: Comprobar que la peticion trae MVP y hay credenciales
+  ansible.builtin.assert:
+    that:
+      - mvp_repo is defined and mvp_repo is match('^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$')
+      - mvp_ref is defined and (mvp_ref is match('^[0-9a-f]{40}$') or mvp_ref is match('^v?[0-9][A-Za-z0-9._-]*$'))
+      - mvp_path is defined and mvp_path is match('^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$') and '..' not in mvp_path
+      - mvp_deploy_key | length > 0
+      - mvp_ghcr_user | length > 0
+      - mvp_ghcr_token | length > 0
+    fail_msg: >-
+      Faltan datos. mvp_repo/mvp_ref/mvp_path salen del bloque `mvp:` de la peticion
+      (ref = SHA de 40 caracteres o tag; nunca una rama). Las credenciales, del
+      entorno: DATASPACE_MVP_DEPLOY_KEY, GHCR_USER y GHCR_READ_TOKEN (environment
+      production de GitHub; en local, docs/credenciales.md).
+
+- name: Comprobar acceso a GitHub y a los registries
+  ansible.builtin.wait_for:
+    host: "{{ item }}"
+    port: 443
+    timeout: 10
+  loop: [github.com, ghcr.io, registry-1.docker.io, quay.io, docker.elastic.co]
+  register: mvp_reach
+  ignore_errors: true
+
+- name: Parar si la VM no llega a los registries
+  ansible.builtin.fail:
+    msg: >-
+      La VM no alcanza {{ mvp_reach.results | selectattr('failed') | map(attribute='item') | join(', ') }}
+      por el 443. Sin eso no se pueden bajar las imagenes: es un problema de red o
+      de DNS de la VM (homelab.yaml network.dns), no del MVP.
+  when: mvp_reach.results | selectattr('failed') | list | length > 0
+
+- name: Instalar Node.js y npm (para Bruno)
+  ansible.builtin.apt:
+    name: [nodejs, npm]
+    state: present
+  when: mvp_install_bruno | bool
+
+- name: Instalar la CLI de Bruno (version fijada)
+  community.general.npm:
+    name: "@usebruno/cli"
+    version: "{{ mvp_bruno_version }}"
+    global: true
+  when: mvp_install_bruno | bool
+
+- name: Crear la cuenta de servicio del MVP
+  ansible.builtin.user:
+    name: "{{ mvp_user }}"
+    groups: docker
+    append: true
+    shell: /bin/bash
+
+# Legible por todos: los miembros del proyecto lanzan las pruebas
+# (scripts/pruebas/bruno.sh) y `make tunnel` lee mvp.env desde su cuenta. No hay
+# secretos en el home fuera de ~/.ssh (0700) y de la config temporal de docker,
+# que se borra al terminar.
+- name: Home de la cuenta de servicio legible por los miembros
+  ansible.builtin.file:
+    path: "{{ mvp_home }}"
+    state: directory
+    mode: "0755"
+
+- name: Crear ~/.ssh de la cuenta de servicio
+  ansible.builtin.file:
+    path: "{{ mvp_home }}/.ssh"
+    state: directory
+    owner: "{{ mvp_user }}"
+    group: "{{ mvp_user }}"
+    mode: "0700"
+
+- name: Fijar las claves de host de github.com
+  ansible.builtin.copy:
+    dest: "{{ mvp_home }}/.ssh/known_hosts_github"
+    content: "{{ mvp_github_known_hosts }}"
+    owner: "{{ mvp_user }}"
+    group: "{{ mvp_user }}"
+    mode: "0644"
+
+# Un job cancelado en GitHub no para el script en la VM: seguiria compitiendo con
+# el despliegue nuevo por el mismo cluster.
+- name: Parar un despliegue anterior que siga corriendo
+  ansible.builtin.command: pkill -TERM -u {{ mvp_user }} -f "scripts/ciclo-de-vida/kind-(up|down)\.sh"
+  register: mvp_pkill
+  changed_when: mvp_pkill.rc == 0
+  failed_when: mvp_pkill.rc > 1
+
+- name: Instalar el script que mira el estado del despliegue
+  ansible.builtin.copy:
+    src: estado_mvp.py
+    dest: "{{ mvp_estado_bin }}"
+    mode: "0755"
+
+- name: Clonar, desplegar y vigilar (las credenciales se borran siempre al final)
+  block:
+    - name: Borrar credenciales que hubiera dejado un run cortado
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ mvp_home }}/.ssh/deploy_key"
+        - "{{ mvp_docker_config }}"
+
+    - name: Escribir la deploy key (temporal)
+      ansible.builtin.copy:
+        dest: "{{ mvp_home }}/.ssh/deploy_key"
+        content: "{{ mvp_deploy_key | regex_replace('\r', '') | trim }}\n"
+        owner: "{{ mvp_user }}"
+        group: "{{ mvp_user }}"
+        mode: "0600"
+      no_log: true
+
+    - name: Clonar o actualizar dataspace-mvp en el ref fijado
+      become: true
+      become_user: "{{ mvp_user }}"
+      ansible.builtin.git:
+        repo: "git@github.com:{{ mvp_repo }}.git"
+        dest: "{{ mvp_checkout }}"
+        version: "{{ mvp_ref }}"
+        key_file: "{{ mvp_home }}/.ssh/deploy_key"
+        ssh_opts: "-o UserKnownHostsFile={{ mvp_home }}/.ssh/known_hosts_github -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes"
+        accept_newhostkey: false
+        force: true   # el checkout es de la automatizacion: cambios locales se descartan
+        update: true
+
+    - name: Borrar la deploy key en cuanto ya no hace falta
+      ansible.builtin.file:
+        path: "{{ mvp_home }}/.ssh/deploy_key"
+        state: absent
+
+    - name: Comprobar que la carpeta es un MVP de dsgen
+      ansible.builtin.stat:
+        path: "{{ mvp_dir }}/scripts/herramientas/mvp.env"
+      register: mvp_env_stat
+
+    - name: Parar si no lo es
+      ansible.builtin.fail:
+        msg: >-
+          {{ mvp_repo }}@{{ mvp_ref }} no tiene {{ mvp_path }}/scripts/herramientas/mvp.env.
+          Revisa `mvp.path` en la peticion (la carpeta del MVP dentro del repo, p. ej. demo).
+      when: not mvp_env_stat.stat.exists
+
+    # KIND_CLUSTER y NAMESPACE los decide la spec del MVP (mvp.yaml), no este rol.
+    - name: Leer la spec resuelta del MVP (mvp.env)
+      ansible.builtin.slurp:
+        src: "{{ mvp_dir }}/scripts/herramientas/mvp.env"
+      register: mvp_env_raw
+
+    - name: Extraer cluster y namespace
+      vars:
+        txt: "{{ mvp_env_raw.content | b64decode }}"
+      ansible.builtin.set_fact:
+        mvp_kind_cluster: "{{ txt | regex_search('(?m)^KIND_CLUSTER=(.+)$', '\\1') | first }}"
+        mvp_namespace: "{{ txt | regex_search('(?m)^NAMESPACE=(.+)$', '\\1') | first }}"
+
+    - name: Login en ghcr.io (config de docker temporal)
+      become: true
+      become_user: "{{ mvp_user }}"
+      ansible.builtin.command:
+        cmd: docker login ghcr.io -u {{ mvp_ghcr_user }} --password-stdin
+        stdin: "{{ mvp_ghcr_token }}"
+      environment:
+        DOCKER_CONFIG: "{{ mvp_docker_config }}"
+      no_log: true
+      changed_when: false
+
+    - name: Elegir script
+      ansible.builtin.set_fact:
+        mvp_script: >-
+          {{ 'scripts/ciclo-de-vida/kind-down.sh && scripts/ciclo-de-vida/kind-up.sh'
+             if mvp_recreate | bool else 'scripts/ciclo-de-vida/kind-up.sh' }}
+
+    - name: Avisar de lo que se va a hacer
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'BORRANDO y recreando' if mvp_recreate | bool else 'Desplegando (idempotente)' }}
+          el MVP {{ mvp_path }} de {{ mvp_repo }}@{{ mvp_ref[:12] }} en el cluster kind
+          '{{ mvp_kind_cluster }}' (namespace {{ mvp_namespace }}). Log en la VM:
+          {{ mvp_dir }}/despliegue.log
+
+    # Limites y visibilidad (docs/dataspace.md -> "Que pasa durante el despliegue"):
+    #   1. siempre hay limite (mvp_timeout), nunca el del job entero;
+    #   2. cada mvp_poll segundos se ve en que fase va y como estan los pods;
+    #   3. se falla en cuanto hay una senal de que no se va a arreglar solo (pod en
+    #      ErrImageNeverPull, otro atascado mvp_fail_after vueltas en
+    #      ImagePullBackOff/CrashLoopBackOff..., o un "ERROR:" en el log);
+    #   4. al fallar se vuelca el diagnostico aqui mismo, sin entrar en la VM;
+    #   5. "terminado" es que el script acabe bien Y todos los pods esten listos.
+    - name: Desplegar el MVP (en segundo plano)
+      become: true
+      become_user: "{{ mvp_user }}"
+      ansible.builtin.shell:
+        cmd: set -o pipefail; ( {{ mvp_script }} ) 2>&1 | tee despliegue.log
+        chdir: "{{ mvp_dir }}"
+        executable: /bin/bash
+      environment:
+        HOME: "{{ mvp_home }}"
+        DOCKER_CONFIG: "{{ mvp_docker_config }}"
+      async: "{{ mvp_timeout }}"
+      poll: 0
+      register: mvp_deploy
+      changed_when: true
+
+    - name: Empezar a vigilar
+      ansible.builtin.set_fact:
+        mvp_fin: sigue
+        mvp_motivo: "-"
+        mvp_strikes: {}
+        mvp_vuelta: 0
+
+    # vigilar.yml se incluye a si mismo mientras haga falta. No con `loop`: un
+    # include_tasks con loop evalua el `when` de todas las vueltas al principio y no
+    # se enteraria de que el despliegue ya ha terminado.
+    - name: Vigilar el despliegue (cada {{ mvp_poll }}s, hasta {{ mvp_timeout | int // 60 }} min)
+      ansible.builtin.include_tasks: vigilar.yml
+
+  always:
+    - name: Logout de ghcr.io y borrar las credenciales temporales
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ mvp_home }}/.ssh/deploy_key"
+        - "{{ mvp_docker_config }}"
+
+- name: Diagnosticar y parar
+  when: mvp_fin != "ok"
+  block:
+    - name: Recoger el diagnostico
+      become: true
+      become_user: "{{ mvp_user }}"
+      ansible.builtin.command: >-
+        python3 {{ mvp_estado_bin }} --log {{ mvp_dir }}/despliegue.log
+        --context kind-{{ mvp_kind_cluster }} --diagnostico
+      environment:
+        HOME: "{{ mvp_home }}"
+      register: mvp_diag_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Parar el script si sigue corriendo
+      ansible.builtin.command: pkill -TERM -u {{ mvp_user }} -f "scripts/ciclo-de-vida/kind-(up|down)\.sh"
+      register: mvp_pkill2
+      changed_when: mvp_pkill2.rc == 0
+      failed_when: false
+
+    - name: Diagnostico
+      vars:
+        d: "{{ mvp_diag_raw.stdout | from_json if mvp_diag_raw.rc == 0 else {} }}"
+        nl: "\n"   # salto real: un '\n' dentro de la plantilla sale literal en Ansible 2.20
+      ansible.builtin.fail:
+        msg: |
+          DESPLIEGUE FALLIDO en {{ inventory_hostname }}: {{ mvp_motivo if mvp_fin == 'fallo' else 'no ha terminado en ' ~ (mvp_timeout | int // 60) ~ ' min' }}
+
+          Pods que no estan listos:
+          {{ (d.no_listos | default(['(no se pudo leer el cluster)'])) | join(nl) }}
+
+          Ultimos eventos de aviso:
+          {{ (d.eventos | default([])) | join(nl) }}
+
+          Ultimas lineas del log del despliegue:
+          {{ (d.cola_log | default([])) | join(nl) }}
+
+          Log completo: make ssh NAME={{ inventory_hostname }}  y  less {{ mvp_dir }}/despliegue.log
+          Repetir desde cero (BORRA el cluster kind): make configure NAME={{ inventory_hostname }} ARGS="-e mvp_recreate=true"
+          Runbook: docs/dataspace.md -> "Si falla"
+
+# Los miembros del proyecto usan kubectl con su propia cuenta: se les deja el
+# kubeconfig del cluster kind (estan en el grupo docker, que ya da control total
+# del cluster; esto solo les ahorra el paso).
+- name: Dar a cada persona de la VM el kubeconfig del MVP
+  become: true
+  become_user: "{{ item.user }}"
+  ansible.builtin.command: kind export kubeconfig --name {{ mvp_kind_cluster }}
+  loop: "{{ vm_access[inventory_hostname] | default([]) }}"
+  loop_control:
+    label: "{{ item.user }}"
+  changed_when: false
+
+- name: Como entrar
+  ansible.builtin.debug:
+    msg:
+      - "MVP {{ mvp_path }} desplegado en {{ inventory_hostname }} ({{ ansible_host }}), cluster kind '{{ mvp_kind_cluster }}'."
+      - "Desde tu maquina:  make tunnel NAME={{ inventory_hostname }}   (rutas: README.md del MVP)"
+      - "Pruebas, en la VM:  cd {{ mvp_dir }} && ./scripts/pruebas/bruno.sh --todas"

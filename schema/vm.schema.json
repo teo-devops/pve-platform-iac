@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://homelab-iac/schema/vm.schema.json",
+  "title": "Peticion de VM suelta (requests/vms/<nombre>.yaml)",
+  "description": "Estructura. Las reglas que dependen de otros ficheros (rangos del proyecto, flavor admitido por el perfil, duplicados) las comprueba `scripts/iac check`. Referencia: docs/peticiones.md",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project", "vmid", "ip"],
+  "properties": {
+    "project": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,40}[a-z0-9])?$", "description": "Proyecto de projects.yaml; decide el pool y quien entra"},
+    "flavor": {"type": "string", "description": "Tamaño de catalog/flavors.yaml (por defecto vm-small)"},
+    "profile": {"type": "string", "enum": ["vm", "monitoring", "dataspace-kind"], "description": "Que se instala (catalog/profiles.yaml; por defecto vm)"},
+    "vmid": {"type": "integer", "minimum": 100, "maximum": 999999999},
+    "ip": {"type": "string", "format": "ipv4", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$"},
+    "description": {"type": "string", "maxLength": 200},
+    "mvp": {
+      "type": "object",
+      "description": "Solo con profile: dataspace-kind. El MVP de dataspace a desplegar",
+      "additionalProperties": false,
+      "required": ["repo", "ref", "path"],
+      "properties": {
+        "repo": {"type": "string", "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$", "description": "owner/repo de GitHub"},
+        "ref": {"type": "string", "pattern": "^([0-9a-f]{40}|v?[0-9][A-Za-z0-9._-]*)$", "description": "SHA de 40 caracteres o tag; nunca una rama"},
+        "path": {"type": "string", "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$", "description": "Carpeta del MVP dentro del repo (p. ej. demo)"}
+      }
+    }
+  },
+  "if": {"properties": {"profile": {"const": "dataspace-kind"}}, "required": ["profile"]},
+  "then": {"required": ["mvp"]},
+  "else": {"not": {"required": ["mvp"]}}
+}

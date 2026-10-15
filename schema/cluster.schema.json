@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://homelab-iac/schema/cluster.schema.json",
+  "title": "Peticion de cluster k3s (requests/clusters/<nombre>.yaml)",
+  "description": "Estructura. Rangos, familia y minimo de workers los comprueba `scripts/iac check`. Referencia: docs/peticiones.md",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project", "flavor_size", "vmid_base", "ip_base"],
+  "properties": {
+    "project": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,40}[a-z0-9])?$"},
+    "flavor_size": {"type": "string", "description": "Familia de cluster_sizes en catalog/flavors.yaml"},
+    "workers": {"type": "integer", "minimum": 1, "maximum": 20},
+    "vmid_base": {"type": "integer", "minimum": 100},
+    "ip_base": {"type": "integer", "minimum": 2, "maximum": 254, "description": "Ultimo octeto del master; los workers usan los siguientes"},
+    "k3s_version": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+\\+k3s[0-9]+$"},
+    "description": {"type": "string", "maxLength": 200}
+  }
+}

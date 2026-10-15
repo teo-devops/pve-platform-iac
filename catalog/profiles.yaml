@@ -1,0 +1,36 @@
+# PERFILES: que se instala en una VM despues de crearla. El flavor dice CUANTO
+# (cpu/ram/disco); el perfil dice PARA QUE. `configure` ejecuta los playbooks del
+# perfil de cada VM, en el orden de la lista.
+#
+# `flavors` limita los tamaños con sentido para cada perfil: el asistente solo
+# ofrece esos y `make check` (y el plan) rechazan el resto.
+# `requires` son bloques obligatorios en la peticion (ver docs/peticiones.md).
+
+vm_profiles:
+  vm:
+    description: VM Ubuntu con la configuracion base (cuentas del proyecto, chrony, node-exporter)
+    playbooks: [site]
+    flavors: [vm-small, vm-medium, vm-large]
+
+  monitoring:
+    description: Prometheus + Grafana que monitorizan todas las VMs del repo
+    playbooks: [site, monitoring]
+    flavors: [vm-medium, vm-large]
+
+  dataspace-kind:
+    description: "Docker + kind con un MVP de dataspace (teo-devops/dataspace-mvp) desplegado"
+    playbooks: [site, dataspace-kind]
+    flavors: [ds-mvp-kind, ds-mvp-kind-lite]
+    requires: [mvp]
+    defaults:
+      mvp:
+        repo: teo-devops/dataspace-mvp
+        path: demo
+
+# Los clusters no eligen perfil: lo implica la familia (cluster_sizes en
+# flavors.yaml). Esto solo agrupa las familias para el asistente.
+cluster_profiles:
+  k3s:
+    description: Cluster k3s generico
+    playbooks: [site, k3s]
+    sizes: [k3s-mini]

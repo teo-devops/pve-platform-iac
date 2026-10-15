@@ -1,0 +1,7 @@
+{{ ansible_managed | comment }}
+# Fichero COMPLETO, no aditivo: lo que no este aqui deja de tener acceso. Esa es
+# la gracia - permite revocar de verdad, cosa que cloud-init no consigue porque
+# solo corre en el primer arranque de la VM.
+{% for key in authorized %}
+{{ key }}
+{% endfor %}

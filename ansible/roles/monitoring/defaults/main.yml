@@ -1,0 +1,17 @@
+---
+monitoring_config_dir: /etc/prometheus
+
+# Tags fijos y no :latest: un `docker compose pull` futuro no debe cambiar de
+# version por sorpresa.
+monitoring_prometheus_image: "prom/prometheus:v3.1.0"
+monitoring_grafana_image: "grafana/grafana:11.5.1"
+
+monitoring_prometheus_port: 9090
+monitoring_grafana_port: 3000
+
+monitoring_scrape_interval: 15s
+
+# Targets extra a scrapear, ademas de prometheus mismo. Formato:
+#   - job_name: k3s-nodes
+#     targets: ["172.27.38.10:9100", "172.27.38.11:9100"]
+monitoring_scrape_jobs: []

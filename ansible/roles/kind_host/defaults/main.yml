@@ -1,0 +1,15 @@
+---
+# Versiones fijadas: el MVP de dataspace (platform/README.md) documenta con cuales se prueba
+# (kind da Kubernetes 1.34; Envoy Gateway 1.9 exige >= 1.32). Subirlas es un MR.
+kind_version: v0.30.0
+kubectl_version: v1.34.1
+helm_version: v3.19.0
+
+kind_host_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_architecture] | default('amd64') }}"
+kind_host_bin_dir: /usr/local/lib/kind-host
+
+# KinD con ~30 pods agota los inotify por defecto de Ubuntu (128 instancias) y
+# los pods mueren con "too many open files", sin relacion aparente con la causa.
+kind_host_sysctl:
+  fs.inotify.max_user_watches: 524288
+  fs.inotify.max_user_instances: 512

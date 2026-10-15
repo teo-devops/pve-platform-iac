@@ -1,0 +1,158 @@
+---
+# ACCESO A LA VM. Dos tipos de cuenta:
+#
+#   ops         la de arranque y automatizacion. cloud-init la crea con las claves
+#               `ssh_key` de admins y service en projects.yaml; aqui se
+#               re-sincronizan en cada run, asi que quitar una la revoca de verdad.
+#   <persona>   una por quien tenga acceso a ESTA VM (miembros de SU proyecto +
+#               admins, output vm_access de Terraform), con las claves de su perfil
+#               de GitHub. Cuenta propia = auditoria de quien hace que, y un
+#               freelancer de otro proyecto no tiene cuenta aqui.
+#
+# authorized_keys es siempre COMPLETO, no aditivo: lo que no esta en la fuente
+# deja de entrar. Y quien ya no tiene acceso pierde su cuenta (su home se queda,
+# por si habia algo que recuperar).
+
+# --- ops --------------------------------------------------------------------------
+# El comprobar el TIPO no es paranoia: `-e ops_ssh_keys=[]` pasa la variable como
+# la cadena "[]", que tiene longitud 2 y colaba un `length > 0`. El template
+# entonces itera sobre sus caracteres y escribe basura en authorized_keys,
+# dejando la VM inaccesible.
+- name: Comprobar que las claves de ops son utilizables
+  ansible.builtin.assert:
+    that:
+      - ops_ssh_keys is defined
+      - ops_ssh_keys is sequence
+      - ops_ssh_keys is not string
+      - ops_ssh_keys | length > 0
+      - ops_ssh_keys | select('match', '^(ssh-(rsa|ed25519)|ecdsa-sha2-nistp[0-9]+) AAAA') | list | length
+        == ops_ssh_keys | length
+    fail_msg: >-
+      ops_ssh_keys no es una lista de claves publicas validas y desplegar
+      authorized_keys asi dejaria la VM sin acceso para la automatizacion.
+      Regenera el inventario (make configure), que la deriva de projects.yaml.
+
+- name: Crear la cuenta ops
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    shell: /bin/bash
+
+- name: Crear el .ssh de ops
+  ansible.builtin.file:
+    path: "/home/{{ admin_user }}/.ssh"
+    state: directory
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0700"
+
+- name: Desplegar las claves de ops
+  ansible.builtin.template:
+    src: authorized_keys.j2
+    dest: "/home/{{ admin_user }}/.ssh/authorized_keys"
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0600"
+  vars:
+    authorized: "{{ ops_ssh_keys }}"
+
+- name: Crear el grupo de cuentas personales
+  ansible.builtin.group:
+    name: "{{ base_people_group }}"
+
+# Sin contraseña a proposito: ninguna cuenta tiene password (solo clave SSH),
+# asi que un sudo con password no se podria usar.
+- name: Dar sudo a ops y a las cuentas personales
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/90-iac
+    content: |
+      # Gestionado por Ansible (roles/base/tasks/access.yml): no editar a mano.
+      {{ admin_user }} ALL=(ALL) NOPASSWD:ALL
+      %{{ base_people_group }} ALL=(ALL) NOPASSWD:ALL
+    mode: "0440"
+    validate: visudo -cf %s
+
+# --- personas ---------------------------------------------------------------------
+# Sin vm_access (estado de Terraform anterior al output) no se toca ninguna cuenta
+# personal: mejor no hacer nada que revocar a todo el mundo por falta de datos.
+- name: Avisar de que no hay datos de acceso
+  ansible.builtin.debug:
+    msg: >-
+      vm_access no esta en el estado de Terraform todavia: no se gestionan cuentas
+      personales en esta pasada. Se arregla con el primer apply tras migrar.
+  when: not (vm_access_managed | default(false) | bool)
+
+- name: Cuentas personales
+  when: vm_access_managed | default(false) | bool
+  block:
+    - name: Calcular quien entra en esta VM
+      ansible.builtin.set_fact:
+        base_people: "{{ vm_access[inventory_hostname] | default([]) }}"
+
+    # Una peticion por persona para toda la ejecucion, desde el runner. Un usuario
+    # inexistente da 404 y el configure falla aqui, antes de tocar ninguna cuenta.
+    # follow_redirects none: un usuario RENOMBRADO redirige al nuevo, y eso hay que
+    # verlo (y corregir projects.yaml), no seguirlo en silencio.
+    - name: Bajar las claves publicas de GitHub
+      ansible.builtin.uri:
+        url: "{{ base_github_url }}/{{ item }}.keys"
+        return_content: true
+        follow_redirects: none
+        status_code: 200
+      loop: "{{ vm_access.values() | flatten | map(attribute='github') | unique | list }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: base_github_keys
+
+    - name: Indexar las claves por usuario de GitHub
+      ansible.builtin.set_fact:
+        base_keys_by_github: >-
+          {{ dict(base_github_keys.results | map(attribute='item')
+                  | zip(base_github_keys.results | map(attribute='content')
+                        | map('regex_findall', '(?m)^(?:ssh-|ecdsa-|sk-)[^ ]+ [^ ]+.*$'))) }}
+
+    - name: Comprobar que cada persona tiene alguna clave en su perfil
+      ansible.builtin.assert:
+        that: base_keys_by_github[item.github] | length > 0
+        fail_msg: >-
+          El perfil de GitHub de {{ item.github }} no tiene ninguna clave SSH
+          ({{ base_github_url }}/{{ item.github }}.keys esta vacio). Que la añada en
+          GitHub -> Settings -> SSH and GPG keys y se relance el configure.
+      loop: "{{ base_people }}"
+      loop_control:
+        label: "{{ item.user }}"
+
+    - name: Crear las cuentas personales
+      ansible.builtin.user:
+        name: "{{ item.user }}"
+        groups: "{{ base_people_group }}"
+        append: true
+        shell: /bin/bash
+      loop: "{{ base_people }}"
+      loop_control:
+        label: "{{ item.user }}"
+
+    - name: Desplegar las claves de cada persona (fichero completo)
+      ansible.posix.authorized_key:
+        user: "{{ item.user }}"
+        key: "{{ base_keys_by_github[item.github] | join('\n') }}"
+        exclusive: true
+      loop: "{{ base_people }}"
+      loop_control:
+        label: "{{ item.user }}"
+
+    - name: Ver quien tiene cuenta personal ahora
+      ansible.builtin.getent:
+        database: group
+        key: "{{ base_people_group }}"
+
+    # Solo cuentas del grupo gestionado: nunca ops, root ni cuentas del sistema.
+    - name: Quitar la cuenta a quien ya no tiene acceso
+      ansible.builtin.user:
+        name: "{{ item }}"
+        state: absent
+        remove: false
+      loop: >-
+        {{ (ansible_facts.getent_group[base_people_group][2] | default('')).split(',')
+           | reject('equalto', '') | difference(base_people | map(attribute='user') | list)
+           | difference([admin_user, 'root']) }}

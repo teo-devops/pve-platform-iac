@@ -1,0 +1,67 @@
+---
+# Docker desde el repo oficial, con el plugin `docker compose` v2
+# (docker-compose-plugin): v1 esta EOL y community.docker.docker_compose_v2 no lo
+# maneja.
+- name: Instalar prerrequisitos de apt
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Crear directorio de keyrings de apt
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Keyring propio + signed-by, y no apt_key: esa (aparte de estar deprecada) deja
+# la clave en el trusted.gpg global, donde firma cualquier repo del sistema.
+- name: Descargar la clave GPG de Docker
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Añadir el repositorio de Docker
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ docker_arch }} signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+    filename: docker
+    state: present
+
+- name: Instalar Docker y el plugin compose v2
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+
+- name: Habilitar y arrancar Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+
+
+# Quien entra en la VM usa docker sin sudo: lo necesitan kind y los scripts del
+# MVP de dataspace, que llaman a `docker` directamente. Las cuentas personales
+# las crea el rol base (vm_access).
+- name: Dar acceso a Docker a ops y a las cuentas personales
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+  loop: "{{ [admin_user] + (vm_access[inventory_hostname] | default([]) | map(attribute='user') | list) }}"

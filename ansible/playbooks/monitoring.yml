@@ -1,0 +1,12 @@
+---
+# Requiere haber corrido antes playbooks/site.yml (rol base) sobre este host.
+#
+# Apunta al grupo y no al host "monitoring-server" directamente: ese nombre sale
+# de una clave de terraform.tfvars, y renombrarla ahi dejaria el play sin hosts
+# en silencio. Quien entra en el grupo lo decide MONITORING_HOSTS en
+# inventory/generate_inventory.sh.
+- name: Configurar el stack de monitorizacion (Prometheus + Grafana)
+  hosts: monitoring
+  become: true
+  roles:
+    - monitoring

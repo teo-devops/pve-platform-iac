@@ -1,0 +1,13 @@
+---
+# VMs con perfil `dataspace-kind`: Docker + kind + un MVP de teo-devops/dataspace-mvp
+# desplegado con sus propios scripts. Requiere haber corrido antes site.yml.
+#
+# Credenciales, en el entorno (en CI las pone el environment production):
+#   DATASPACE_MVP_DEPLOY_KEY, GHCR_USER, GHCR_READ_TOKEN   (docs/credenciales.md)
+#
+# ⚠️ -e mvp_recreate=true BORRA el cluster kind del MVP y lo recrea (datos incluidos).
+- name: Desplegar MVPs de dataspace en kind
+  hosts: dataspace_kind
+  become: true
+  roles:
+    - dataspace_mvp
