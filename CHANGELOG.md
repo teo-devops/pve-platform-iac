@@ -2,6 +2,19 @@
 
 Cambios con impacto para quien usa u opera la plataforma. Formato: fecha, qué y dónde está documentado.
 
+## 15-oct-2026 — Puesta en marcha de Proxmox documentada
+
+- [docs/bootstrap.md](docs/bootstrap.md) §0: preparar Proxmox antes del repo (disco y datastore, repos
+  sin suscripción de PVE 9 en formato deb822, ARC de ZFS, bridge con VLAN, DNS, contenido `import`,
+  cluster y quórum con dos nodos, cuenta de admin y segundo factor por usuario, copias de seguridad,
+  capacidad y exposición).
+- §1: transferir el repo si ya existe en una cuenta personal. §10: VPN para que los devs lleguen a
+  las VMs.
+- [docs/seguridad.md](docs/seguridad.md): riesgo aceptado A-9 (red plana entre proyectos).
+- `homelab.yaml`: `image_datastore` necesita el contenido `import` (antes decía «iso», por error).
+- Claves SSH del admin y del CI en `projects.yaml`; cómo cambia de PC un admin en
+  [docs/operador.md](docs/operador.md#cambio-de-pc-de-un-admin).
+
 ## 14-oct-2026 — Primera versión
 
 Plataforma GitOps para el Proxmox del homelab, derivada de `proxmox-iac` (cluster retech de i2cat), que

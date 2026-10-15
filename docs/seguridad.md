@@ -108,6 +108,7 @@ los dos).
 | A-6 | La restricción de grupos de runners a workflows concretos puede no estar en el plan Team | Depende del plan de GitHub | Aunque falte, los devs no pueden crear ramas (D-04) y los runners son efímeros | Verificarlo al crear los grupos ([bootstrap.md §6](bootstrap.md#6-runners-del-homelab)) |
 | A-7 | El plan de PR no ve la deriva (`-refresh=false`) | Refrescar exige `VM.Config.Disk` (un permiso de modificación) | El plan de main sí refresca, y drift.yml lo hace a diario | — |
 | A-8 | Lo que no gestiona el repo (otras VMs del homelab) queda fuera de la deriva | Terraform solo conoce su estado | Las ACL impiden que el token toque VMs fuera de los pools del repo | — |
+| A-9 | Red plana: las VMs de todos los proyectos están en el mismo bridge y se ven entre sí (puertos de servicio incluidos, como la API de k3s o el MVP) | Simplicidad del homelab: un solo bridge y una sola red | Las cuentas SSH son por proyecto (D-10); la VPN solo deja llegar al `:22` ([bootstrap.md §10](bootstrap.md#10-acceso-de-los-devs-a-las-vms-vpn)) | Firewall de Proxmox con un grupo de seguridad por proyecto, o una VLAN o zona SDN por proyecto |
 
 ## Qué hacer si…
 

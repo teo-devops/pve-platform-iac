@@ -11,9 +11,11 @@ proxmox:
   # Nodo -> IP de gestion. El orden importa: es el del round-robin de VMs.
   nodes:
     TODO-pve1: TODO-192.168.1.10
-  # Donde van los discos de las VMs (local-lvm, local-zfs...)
+  # Donde van los discos de las VMs: local-zfs si instalaste con ZFS, local-lvm con
+  # ext4/xfs. Mismo nombre en TODOS los nodos (docs/bootstrap.md §0).
   datastore: local-lvm
-  # Donde se descarga la imagen base (tiene que admitir el tipo de contenido "iso")
+  # Donde se descarga la imagen base: tiene que admitir el contenido "import", que no
+  # viene activado por defecto (docs/bootstrap.md §0, paso 6)
   image_datastore: local
   bridge: vmbr0
   vlan_tag: null
