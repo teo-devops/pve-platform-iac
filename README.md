@@ -10,21 +10,29 @@ pull request, **without knowing Terraform or Ansible and without any infrastruct
 credentials**. An admin reviews the plan, merges, and only the pipeline applies it, the same way
 Argo CD manages applications.
 
-> [!WARNING]
-> **Beta (v0.1.0).** The design, security model and docs are complete and checked in CI, but the
-> platform has **not yet run against a real Proxmox cluster**. See [Status](#status).
+> [!NOTE]
+> **Beta (v0.1.0).** The GitOps flow (YAML request → reviewed PR → plan → pipeline apply →
+> Ansible) and the bootstrap process are proven on a real Proxmox cluster in an earlier internal
+> implementation on GitLab CI. This GitHub Actions version, with its extra hardening, has not yet
+> run end to end against a cluster. See [Status](#status).
 
 ## The problem it solves
 
-Companies and SMBs that virtualise with Proxmox usually end up with:
+Inside a company, small teams (a project, a working group, a PoC, a demo for a client) often need
+their own VMs and clusters **now**, but the infrastructure belongs to someone else. They usually
+end up with:
 
-- **VMs requested by ticket or chat**, created by hand by whoever has the root password.
+- **VMs requested by ticket or chat**, waiting on whoever has the root password.
 - **Admins applying changes from their laptops** with powerful tokens and no record of who changed
   what.
 - **Forgotten VMs** eating shared capacity, and **clusters built by hand** that nobody can
   rebuild.
 
-pve-platform-iac turns your cluster into a GitOps platform:
+pve-platform-iac brings a **professional GitOps workflow to self-managed teams on your own
+infrastructure**: teams become autonomous for their day-to-day needs, while admins keep the
+review, the limits and the audit trail. It is a starting point for team self-service, not a
+replacement for your organization's infrastructure strategy: decide with your infra team where it
+fits (which cluster, which networks, which projects). In practice:
 
 - **Every VM is a YAML file in `requests/`.** Creating, resizing or deleting one is a reviewed PR,
   with its Terraform plan posted on it, and git is the audit trail.
@@ -185,10 +193,14 @@ Run `make` to list every command.
 
 As of **19 Oct 2026**:
 
+- **Proven on a real cluster** (earlier internal implementation, GitLab CI): the request model,
+  the closed catalog, the wizards, the validation rules, per-person accounts with SSH keys from the
+  Git profile, the generated inventory and the plan → apply → configure pipeline.
 - **Checked in CI:** `terraform fmt`/`validate`, tflint, ansible-lint and syntax checks,
   actionlint, JSON Schema for requests, `iac check`, internal doc links and the catalog table.
-- **Not yet run against real infrastructure:** plan and apply on Proxmox, the exact privileges of
-  the `IaCApply` role, the workflows on self-hosted runners, backups and the VPN.
+- **New in this version, not yet run against real infrastructure:** GitHub Actions with
+  self-hosted ephemeral runners, HCP state, per-project pools and the `IaCApply` role without ACLs
+  on `/`, the encrypted plan, pinned host keys, backups and the VPN.
 - **No unit tests yet** for `scripts/iac` and no `terraform test`. That comes before 1.0.
 
 History: [CHANGELOG.md](CHANGELOG.md).

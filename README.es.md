@@ -10,22 +10,29 @@ con un pull request, **sin saber Terraform ni Ansible y sin ninguna credencial d
 infraestructura**. Un admin revisa el plan y mergea, y solo el pipeline lo aplica, igual que Argo CD
 gestiona las aplicaciones.
 
-> [!WARNING]
-> **Beta (v0.1.0).** El diseño, el modelo de seguridad y la documentación están completos y
-> comprobados en CI, pero la plataforma **aún no se ha ejecutado contra un cluster Proxmox real**.
-> Ver [Estado](#estado).
+> [!NOTE]
+> **Beta (v0.1.0).** El flujo GitOps (petición YAML → PR revisado → plan → apply del pipeline →
+> Ansible) y la puesta en marcha están probados en un cluster Proxmox real con una implementación
+> interna anterior sobre GitLab CI. Esta versión con GitHub Actions, y su endurecimiento adicional,
+> aún no se ha ejecutado de principio a fin contra un cluster. Ver [Estado](#estado).
 
 ## Qué problema resuelve
 
-Las empresas y pymes que virtualizan con Proxmox suelen acabar con:
+Dentro de una empresa, los equipos pequeños (un proyecto, un grupo de trabajo, una PoC, una demo
+para un cliente) necesitan sus VMs y clusters **ya**, pero la infraestructura es de otros. Suelen
+acabar con:
 
-- **VMs pedidas por ticket o por chat**, creadas a mano por quien tiene la contraseña de root.
+- **VMs pedidas por ticket o por chat**, esperando a quien tiene la contraseña de root.
 - **Admins aplicando cambios desde su portátil** con tokens con mucho poder y sin registro de quién
   cambió qué.
 - **VMs olvidadas** que consumen capacidad compartida, y **clusters montados a mano** que nadie sabe
   reconstruir.
 
-pve-platform-iac convierte tu cluster en una plataforma GitOps:
+pve-platform-iac lleva un **flujo GitOps profesional a equipos autogestionados sobre
+infraestructura propia**: los equipos ganan autonomía en su día a día y los admins conservan la
+revisión, los límites y la trazabilidad. Es una puesta en marcha de autoservicio para equipos, no un
+sustituto de la estrategia de infraestructura de la organización: decide con tu equipo de infra
+dónde encaja (qué cluster, qué redes, qué proyectos). En la práctica:
 
 - **Cada VM es un YAML en `requests/`.** Crear, redimensionar o borrar una es un PR revisado, con su
   plan de Terraform comentado, y git es el registro de auditoría.
@@ -181,11 +188,16 @@ Modelo de amenazas, controles (R-nn), riesgos aceptados (A-n) e inventario de se
 
 Al **19-oct-2026**:
 
+- **Probado en un cluster real** (implementación interna anterior, GitLab CI): el modelo de
+  peticiones, el catálogo cerrado, los asistentes, las reglas de validación, las cuentas por persona
+  con las claves SSH del perfil de Git, el inventario generado y el pipeline plan → apply →
+  configure.
 - **Comprobado en CI:** `terraform fmt`/`validate`, tflint, ansible-lint y `--syntax-check`,
   actionlint, JSON Schema de las peticiones, `iac check`, enlaces internos de la documentación y la
   tabla del catálogo.
-- **Aún sin ejecutar contra infraestructura real:** el plan y el apply en Proxmox, los privilegios
-  exactos del rol `IaCApply`, los workflows en runners propios, las copias y la VPN.
+- **Nuevo en esta versión, aún sin ejecutar contra infraestructura real:** GitHub Actions con runners
+  propios efímeros, estado en HCP, pools por proyecto y el rol `IaCApply` sin ACL en `/`, el plan
+  cifrado, las claves de host fijadas, las copias y la VPN.
 - **Sin tests unitarios todavía** de `scripts/iac` ni `terraform test`. Es lo siguiente antes de
   una 1.0.
 
