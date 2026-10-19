@@ -1,13 +1,14 @@
 # Operación (admin)
 
-**Para quién:** quien tenga el rol de admin (equipo `infra-admins` y `admins` en `projects.yaml`).
-El admin es un **rol**, no una persona: todo lo que sigue lo puede hacer cualquiera que lo tenga.
+**Para quién:** quien tenga el rol de admin: los `admins` de `projects.yaml` (con organización de
+GitHub, también el equipo `infra-admins`). El admin es un **rol**, no una persona: todo lo que sigue
+lo puede hacer cualquiera que lo tenga.
 
-**Qué necesitas:** `gh` con permisos de admin de la organización, acceso al host de runners y, solo
-para break-glass, las credenciales de [credenciales.md](credenciales.md) en tu gestor de
-contraseñas.
+**Qué necesitas:** `gh` con permisos de admin del repo (y de la organización, en el modelo A),
+acceso al host de runners y, solo para break-glass, las credenciales del
+[inventario de secretos](seguridad.md#inventario-de-secretos) en tu gestor de contraseñas.
 
-Puesta en marcha desde cero: [bootstrap.md](bootstrap.md).
+Puesta en marcha desde cero: [bootstrap.md](bootstrap.md). Incidentes: [runbooks.md](runbooks.md).
 
 ## Revisar un PR
 
@@ -67,12 +68,13 @@ Puesta en marcha desde cero: [bootstrap.md](bootstrap.md).
   En Cloudflare Zero Trust, quita su email de las listas y revoca sus dispositivos y sesiones (My
   Team → Users → el usuario → Revoke). Así pierde también la red, aunque el deploy aún no haya
   borrado su cuenta.
-- **Rotar su clave:** la cambia él en GitHub, y se aplica en el siguiente `configure` (o lanza deploy
+- **Rotar su clave:** la cambia esa persona en GitHub, y se aplica en el siguiente `configure` (o lanza deploy
   a mano).
 
 ## Alta de un admin
 
-1. Equipo `infra-admins` en GitHub.
+1. En GitHub: con organización, al equipo `infra-admins`; con cuenta personal, colaborador del repo
+   con rol Admin (los únicos colaboradores son los admins, [A-11](seguridad.md#riesgos-aceptados)).
 2. PR a `projects.yaml`: su usuario en `admins` con su `ssh_key` (entra en `ops` de todas las VMs y
    tiene cuenta personal en todas).
 3. Acceso al host de runners y a las credenciales de break-glass.
@@ -101,7 +103,7 @@ revocada) y vuelve a leer tus claves de GitHub. Las VMs que ya existían no se r
 solo se usa en el primer arranque, y Terraform ignora ese cambio (`ignore_changes` en
 `terraform/modules/vm/main.tf`). Comprueba que entras con `make ssh NAME=<vm>`. Al final, borra en
 GitHub la clave del PC viejo; si lo has **perdido**, hazlo lo primero
-([runbooks/token-comprometido.md](runbooks/token-comprometido.md)).
+([runbooks.md](runbooks.md#secreto-comprometido)).
 
 Una sola clave por admin en `projects.yaml` es deliberado. Mientras haces el cambio, puedes seguir
 entrando con la cuenta personal si ya has añadido la clave nueva en GitHub.
@@ -120,7 +122,7 @@ la imagen nueva.
 ## Deriva
 
 El workflow `drift` corre cada día. Si falla, hay un issue `drift`:
-[runbooks/deriva-detectada.md](runbooks/deriva-detectada.md).
+[runbooks.md](runbooks.md#deriva-detectada).
 
 ## Mantenimiento periódico
 
@@ -129,9 +131,84 @@ El workflow `drift` corre cada día. Si falla, hay un issue `drift`:
 | semana | PRs de Dependabot (actions, provider, imagen del runner): revisar y mergear |
 | mes | `make image-pin` (parches de seguridad de Ubuntu en las VMs nuevas) |
 | mes | ¿Hay VMs que nadie usa? `make list` y preguntar a cada proyecto |
-| antes de que caduque | PAT de runners y token de ghcr ([credenciales.md](credenciales.md)) |
-| mes | Restauración de prueba de una VM ([runbooks/restaurar-vm.md](runbooks/restaurar-vm.md#prueba-mensual)) y revisar en PBS que la copia diaria, la retención, la limpieza y la verificación salen en verde |
+| antes de que caduque | PAT de runners ([seguridad.md](seguridad.md#pat-de-los-runners)) |
+| mes | Restauración de prueba de una VM ([runbooks.md](runbooks.md#prueba-mensual)) y revisar en PBS que la copia diaria, la retención, la limpieza y la verificación salen en verde |
 | trimestre | Revisar miembros de la organización y de cada proyecto; `make preflight` |
+
+## Ampliar el catálogo
+
+El catálogo es **cerrado** a propósito: los equipos solo pueden pedir lo que está en `catalog/`, y
+así la capacidad es previsible. Ampliarlo es un PR del admin.
+
+| Pieza | Qué decide | Fichero |
+|---|---|---|
+| **Flavor** | Cuánto: vCPU, RAM y disco | `catalog/flavors.yaml` |
+| **Familia de cluster** | Flavors de master y worker, número de workers y versión de k3s | `catalog/flavors.yaml` (`cluster_sizes`) |
+| **Perfil** | Para qué: qué playbooks se ejecutan en la VM | `catalog/profiles.yaml` |
+| Playbook + rol | Cómo se instala | `ansible/playbooks/<perfil>.yml`, `ansible/roles/<rol>/` |
+
+### Un flavor o una familia de cluster
+
+1. En `catalog/flavors.yaml`:
+
+   ```yaml
+   flavors:
+     db-medium:
+       cores: 4
+       memory: 16384     # MB
+       disk: 200         # GB
+       description: Base de datos mediana
+   ```
+   Una familia de cluster necesita sus dos flavors (`<familia>-master` y `<familia>-worker`) y su
+   entrada en `cluster_sizes` (`min_workers`, `default_workers`, `k3s_version`), y se añade a
+   `cluster_profiles.k3s.sizes` de `catalog/profiles.yaml`.
+2. Añade el flavor a la lista `flavors:` de cada perfil que lo admita (`catalog/profiles.yaml`).
+3. `make docs` regenera la tabla de [peticiones.md](peticiones.md#catálogo) (el CI comprueba que
+   está al día) y `make check`.
+
+Cambiar los números de un flavor que ya existe afecta a **todas** sus VMs en el siguiente apply:
+Terraform redimensiona CPU y RAM, y el disco solo puede crecer.
+
+### Un perfil
+
+Ejemplo: un perfil `postgres`. El perfil `monitoring` (`ansible/playbooks/monitoring.yml` y
+`ansible/roles/monitoring/`) es un ejemplo completo y real de lo que sigue.
+
+1. **Catálogo** (`catalog/profiles.yaml`):
+
+   ```yaml
+   vm_profiles:
+     postgres:
+       description: PostgreSQL 16 con copias locales
+       playbooks: [site, postgres]     # site (cuentas, chrony, node-exporter) siempre primero
+       flavors: [vm-medium, db-medium]
+   ```
+2. **Esquema** (`schema/vm.schema.json`): añade `"postgres"` al `enum` de `profile`. `make check`
+   falla si el esquema y el catálogo no tienen los mismos perfiles.
+3. **Playbook** (`ansible/playbooks/postgres.yml`). El inventario agrupa las VMs sueltas por perfil
+   (con `-` cambiado a `_`), así que el play apunta al grupo:
+
+   ```yaml
+   ---
+   - name: PostgreSQL
+     hosts: postgres
+     become: true
+     roles:
+       - postgres
+   ```
+4. **Rol** (`ansible/roles/postgres/`): idempotente, porque `configure` lo vuelve a ejecutar en cada
+   deploy. Sin secretos en el repo: si necesita uno, va al environment `production` y se pasa como
+   variable de entorno en el job `configure` de `deploy.yml`.
+5. `make docs` añade el perfil a la tabla del catálogo; `make lint` (incluye `ansible-lint` y
+   `--syntax-check` en el CI) y PR.
+
+`configure` ejecuta los playbooks conocidos en su orden (`site`, `k3s`, `monitoring`) y los de
+perfiles nuevos después, en orden alfabético (`PLAYBOOK_ORDER` en `scripts/iac`).
+
+Si el perfil necesita **parámetros propios** en la petición, añádelos con las mismas reglas en tres
+sitios: el esquema (una propiedad con `if`/`then` sobre el perfil), `iac check` (`validate` en
+`scripts/iac`) y una `precondition` en `terraform/requests.tf`. Si apuntan a código externo, que sea
+por SHA o tag, nunca por rama: lo desplegado tiene que ser lo revisado.
 
 ## Break-glass
 
@@ -145,7 +222,7 @@ read -rs TF_VAR_pm_api_token && export TF_VAR_pm_api_token      # iac@pve!apply
 make plan        # check + plan + resumen; guarda terraform/tfplan
 make apply       # aplica ESE plan; pide escribir 'aplicar' (o 'destruir')
 make known-hosts SCAN=1      # claves de host (TOFU desde tu maquina: compara las huellas)
-make configure KNOWN_HOSTS=~/.ssh/known_hosts.pve-platform-iac   # Ansible; credenciales del MVP en credenciales.md
+make configure KNOWN_HOSTS=~/.ssh/known_hosts.pve-platform-iac   # Ansible
 ```
 
 Después: un PR que deje `main` igual que lo aplicado (si no, el siguiente drift lo marcará como

@@ -7,8 +7,8 @@
 #   requests/vms/*.yaml    una VM suelta por fichero
 #   requests/clusters/*.yaml  un cluster k3s por fichero
 #
-# El nombre del fichero es la clave del for_each (requests/vms/dataspace-demo.yaml ->
-# module.standalone_vm["dataspace-demo"]). RENOMBRAR un fichero destruye y recrea
+# El nombre del fichero es la clave del for_each (requests/vms/equipo-a-db.yaml ->
+# module.standalone_vm["equipo-a-db"]). RENOMBRAR un fichero destruye y recrea
 # sus VMs; BORRARLO las destruye.
 #
 # Las reglas de abajo son las mismas que `scripts/iac check` (que corre antes en
@@ -64,7 +64,6 @@ locals {
       profile = try(r.profile, "vm")
       vmid    = r.vmid
       ip      = r.ip
-      mvp     = try(r.mvp, null)
     }
   }
 
@@ -122,10 +121,6 @@ locals {
     for k, v in local.standalone_vms : "${k}: flavor '${v.flavor}' / perfil '${v.profile}'"
     if !contains(try(local.profiles.vm_profiles[v.profile].flavors, []), v.flavor)
   ]
-  missing_mvp = [
-    for k, v in local.standalone_vms : k
-    if contains(try(local.profiles.vm_profiles[v.profile].requires, []), "mvp") && v.mvp == null
-  ]
   bad_cluster_size = [for k, c in local.clusters : "${k}: '${c.flavor_size}'" if !contains(keys(local.sizes), c.flavor_size)]
   too_few_workers = [
     for k, c in local.clusters : "${k}: ${c.worker_count} workers, minimo ${c.min_workers}" if c.worker_count < c.min_workers
@@ -179,10 +174,6 @@ output "requests" {
   precondition {
     condition     = length(local.bad_vm_flavor) == 0
     error_message = "Flavor/perfil no validos (catalog/profiles.yaml): ${join(", ", local.bad_vm_flavor)}."
-  }
-  precondition {
-    condition     = length(local.missing_mvp) == 0
-    error_message = "Estas VMs necesitan un bloque `mvp:` (repo, ref y path): ${join(", ", local.missing_mvp)}."
   }
   precondition {
     condition     = length(local.bad_cluster_size) == 0

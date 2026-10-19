@@ -45,7 +45,7 @@ jobs:
           vms=(requests/vms/*.yaml); cl=(requests/clusters/*.yaml)
           [ ${#vms[@]} -eq 0 ] || check-jsonschema --schemafile schema/vm.schema.json "${vms[@]}"
           [ ${#cl[@]} -eq 0 ] || check-jsonschema --schemafile schema/cluster.schema.json "${cl[@]}"
-      - name: reglas (rangos, duplicados, perfiles, mvp) — scripts/iac check
+      - name: reglas (rangos, duplicados, perfiles) — scripts/iac check
         run: ./scripts/iac check
       - name: docs al dia con el catalogo y sin enlaces rotos
         run: |
@@ -92,7 +92,7 @@ jobs:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
         run: |
           # Inventario vacio pero con los grupos que usan los playbooks.
-          printf '[proxmox_vms]\n[k3s_server]\n[k3s_agent]\n[monitoring]\n[dataspace_kind]\n' > inventory/hosts.ini
+          printf '[proxmox_vms]\n[k3s_server]\n[k3s_agent]\n[monitoring]\n' > inventory/hosts.ini
           for p in playbooks/*.yml; do ansible-playbook "$p" --syntax-check; done
       - name: ansible-lint
         working-directory: ansible
@@ -100,7 +100,7 @@ jobs:
       - name: shellcheck y python
         run: |
           shellcheck -S warning scripts/*.sh ansible/inventory/generate_inventory.sh runner/*.sh
-          python3 -m py_compile scripts/iac scripts/check-docs-links.py ansible/roles/dataspace_mvp/files/estado_mvp.py
+          python3 -m py_compile scripts/iac scripts/check-docs-links.py
 
   workflows:
     name: workflows (actionlint)

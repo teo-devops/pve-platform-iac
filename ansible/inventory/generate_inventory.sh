@@ -6,9 +6,9 @@
 #
 #   [<cluster>_server] / [<cluster>_agent]   un par por cluster k3s
 #   [k3s_server] / [k3s_agent]               grupos padre (playbooks/k3s.yml)
-#   [proxmox_standalone]                     VMs sueltas (con mvp_repo/ref/path si tienen MVP)
+#   [proxmox_standalone]                     VMs sueltas
 #   [<perfil>]                               VMs sueltas por perfil (`profile:` con "-" -> "_"):
-#                                            vm, monitoring, dataspace_kind. Cada playbook
+#                                            vm, monitoring... Cada playbook
 #                                            apunta al grupo de su perfil.
 #   [proxmox_vms]                            padre de TODO (playbooks/site.yml)
 #
@@ -36,7 +36,7 @@ if ! TF_OUT_ALL=$(terraform -chdir="$TF_DIR" output -json 2>&1); then
       echo " [ERROR] HCP Terraform pide autenticacion (el estado vive alli)."
       echo " En local:  export TF_CLOUD_ORGANIZATION=<org>"
       echo "            read -rs TF_TOKEN_app_terraform_io && export TF_TOKEN_app_terraform_io"
-      echo " Detalle: docs/credenciales.md"
+      echo " Detalle: docs/seguridad.md#inventario-de-secretos"
       echo "========================================================================="
     } >&2
     exit 1
@@ -104,24 +104,20 @@ print(json.dumps(keys))
   echo
 
   # --- VMs sueltas ------------------------------------------------------------
-  # Las variables del MVP van en la linea del host; @sh las entrecomilla para que
-  # un valor raro no rompa el INI (ademas, `iac check` ya los valida con regex).
+  # @sh entrecomilla el proyecto para que un valor raro no rompa el INI.
   echo "[proxmox_standalone]"
   echo "$STANDALONE_JSON" | jq -r 'to_entries[] |
-    "\(.key) ansible_host=\(.value.ip) project=\(.value.project | @sh)" +
-    (if .value.mvp then
-       " mvp_repo=\(.value.mvp.repo | @sh) mvp_ref=\(.value.mvp.ref | @sh) mvp_path=\(.value.mvp.path | @sh)"
-     else "" end)'
+    "\(.key) ansible_host=\(.value.ip) project=\(.value.project | @sh)"'
   echo
 
   # --- un grupo por perfil ------------------------------------------------------
-  # Se declaran SIEMPRE monitoring y dataspace_kind, aunque esten vacios: un
+  # Se declara SIEMPRE monitoring, aunque esten vacios: un
   # playbook cuyo grupo no existe da un warning confuso; uno vacio, un skip limpio.
   echo "$STANDALONE_JSON" | jq -r '
     (to_entries | group_by(.value.profile)
      | map({key: (.[0].value.profile | gsub("-";"_")), value: map(.key)})
      | from_entries) as $g |
-    ({"monitoring": [], "dataspace_kind": []} + $g) | to_entries[] |
+    ({"monitoring": []} + $g) | to_entries[] |
     "[\(.key)]", (.value[]), ""
   '
 

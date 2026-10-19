@@ -25,10 +25,11 @@ service:
     ssh_key: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDHA2VfkoOp6v0zATB6mTO2a1hwLkt2CRsevDG16lcDM pve-platform-iac-ci
 
 projects:
-  # Dataspaces propios (teo-devops/dataspace-mvp). Ejemplo: cambia o quita lo que no aplique.
-  dataspace:
-    description: MVP de dataspace (EDC) generados con dsgen
-    pool: proj-dataspace
+  # Un proyecto = un equipo o una aplicacion: su pool de Proxmox, sus rangos de VMID e
+  # IP (ultimo octeto de network.prefix de platform.yaml) y quien entra en sus VMs.
+  equipo-a:
+    description: Proyecto de ejemplo (cambialo por el tuyo)
+    pool: proj-equipo-a
     ranges:
       - {vmids: [1100, 1199], ips: [100, 119]}
     members: []

@@ -9,7 +9,7 @@
 # TF_CLOUD_ORGANIZATION y TF_WORKSPACE (variables del repo en GitHub; el workspace,
 # por defecto `pve-platform`; en local los exporta el Makefile). Asi cada instalacion
 # usa los suyos sin tocar el codigo. El token, de TF_TOKEN_app_terraform_io
-# (secreto; docs/credenciales.md).
+# (secreto; docs/seguridad.md#inventario-de-secretos).
 #
 # Bloqueo: cada plan/apply que escribe el estado bloquea el workspace. Los planes
 # de PR y de deriva usan -lock=false (no escriben nada).

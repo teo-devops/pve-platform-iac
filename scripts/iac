@@ -7,7 +7,7 @@ llamar tambien directamente: `scripts/iac <comando> --help`.
 Solo depende de Python 3 y PyYAML. Algunos comandos usan ademas terraform, ssh,
 ssh-keyscan o la CLI de GitHub (gh); lo dicen al fallar.
 
-Referencia de cada comando: docs/pipeline.md (los que usa CI) y docs/inicio-rapido.md
+Referencia de cada comando: docs/diseno.md#pipeline (los que usa CI) y docs/peticiones.md
 (los de los devs).
 """
 
@@ -40,8 +40,8 @@ CA_FILE = os.path.join(TF_DIR, "certs", "pve-root-ca.pem")
 GITHUB_URL = "https://github.com"
 # Workspace de HCP (terraform/backend.tf no lo fija): el mismo por defecto que en CI.
 os.environ.setdefault("TF_WORKSPACE", "pve-platform")
-# Claves de host de las VMs que publica el job `known-hosts` del pipeline. ssh,
-# tunnel y kubeconfig las usan EN LUGAR de ~/.ssh/known_hosts: una VM recreada
+# Claves de host de las VMs que publica el job `known-hosts` del pipeline. ssh
+# y kubeconfig las usan EN LUGAR de ~/.ssh/known_hosts: una VM recreada
 # con la misma IP no da el aviso de "HOST IDENTIFICATION HAS CHANGED" (la clave
 # nueva ya esta aqui), y una suplantacion si.
 KNOWN_HOSTS = os.path.expanduser(os.environ.get("IAC_KNOWN_HOSTS", "~/.ssh/known_hosts.pve-platform-iac"))
@@ -51,14 +51,9 @@ NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,40}[a-z0-9])?$")
 KEY_RE = re.compile(r"^(ssh-(rsa|ed25519)|ecdsa-sha2-nistp[0-9]+) AAAA[0-9A-Za-z+/]{40,}={0,2}( |$)")
 # Usuario de GitHub que ademas sea un nombre de cuenta Linux valido (<= 32).
 GH_USER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,31}$")
-SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-TAG_RE = re.compile(r"^v?[0-9][A-Za-z0-9._-]*$")
-REPO_RE = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
-PATH_RE = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
 
-VM_FIELDS = {"project", "flavor", "profile", "vmid", "ip", "mvp", "description"}
+VM_FIELDS = {"project", "flavor", "profile", "vmid", "ip", "description"}
 CLUSTER_FIELDS = {"project", "flavor_size", "workers", "vmid_base", "ip_base", "k3s_version", "description"}
-MVP_FIELDS = {"repo", "ref", "path"}
 
 # --- salida -------------------------------------------------------------------
 
@@ -216,7 +211,7 @@ def validate(platform, people, catalog, profiles, clusters, vms):
         for m in p.get("members") or []:
             if not GH_USER_RE.match(str(m)):
                 errs.append(f"{f}: miembro '{m}' no es un usuario de GitHub valido (y <= 32 caracteres, por la cuenta Linux)")
-            if str(m).lower() in ("ops", "root", "dataspace", "ubuntu"):
+            if str(m).lower() in ("ops", "root", "ubuntu"):
                 errs.append(f"{f}: miembro '{m}' choca con una cuenta del sistema")
         if not p.get("ranges"):
             warns.append(f"{f}: sin rangos de VMID/IP; no puede pedir VMs todavia")
@@ -282,10 +277,6 @@ def validate(platform, people, catalog, profiles, clusters, vms):
             errs.append(f"{f}: perfil '{prof}' no existe. Opciones: {', '.join(vm_profiles)}")
         elif flav not in vm_profiles[prof].get("flavors", []):
             errs.append(f"{f}: el perfil '{prof}' no admite el flavor '{flav}'. Admite: {', '.join(vm_profiles[prof]['flavors'])}")
-        if prof in vm_profiles and "mvp" in vm_profiles[prof].get("requires", []):
-            errs += [f"{f}: {e}" for e in validate_mvp(v.get("mvp"))]
-        elif "mvp" in v:
-            errs.append(f"{f}: `mvp:` solo vale con un perfil que lo use (dataspace-kind)")
         if flav not in flavors:
             errs.append(f"{f}: flavor '{flav}' no existe en catalog/flavors.yaml")
         ip = str(v.get("ip", ""))
@@ -327,26 +318,6 @@ def validate(platform, people, catalog, profiles, clusters, vms):
     for p in glob.glob(os.path.join(ROOT, "requests", "*", "*.yml")):
         warns.append(f"{os.path.relpath(p, ROOT)}: extension .yml IGNORADA por Terraform; renombralo a .yaml")
     return errs, warns
-
-
-def validate_mvp(mvp):
-    """Errores del bloque mvp: de una peticion dataspace-kind."""
-    if not isinstance(mvp, dict):
-        return ["el perfil necesita un bloque `mvp:` con `repo`, `ref` y `path` (docs/peticiones.md)"]
-    errs = []
-    extra = set(mvp) - MVP_FIELDS
-    if extra:
-        errs.append(f"mvp: campos desconocidos {sorted(extra)} (validos: {sorted(MVP_FIELDS)})")
-    if not REPO_RE.match(str(mvp.get("repo", ""))):
-        errs.append(f"mvp.repo tiene que ser <owner>/<repo> de GitHub: {mvp.get('repo')!r}")
-    ref = str(mvp.get("ref", ""))
-    if not (SHA_RE.match(ref) or TAG_RE.match(ref)):
-        errs.append(f"mvp.ref tiene que ser un SHA de 40 caracteres o un tag (v1.2.3), nunca una rama: {ref!r}. "
-                    "Una rama cambia sin pasar por un PR, y lo desplegado dejaria de ser lo revisado")
-    path = str(mvp.get("path", ""))
-    if not PATH_RE.match(path) or ".." in path:
-        errs.append(f"mvp.path tiene que ser la carpeta del MVP dentro del repo (p. ej. demo): {path!r}")
-    return errs
 
 
 # --- asignacion -----------------------------------------------------------------
@@ -443,7 +414,7 @@ def cmd_check(args):
     platform, people, catalog, profiles, clusters, vms = load_all()
     errs, warns = validate(platform, people, catalog, profiles, clusters, vms)
     # El esquema (lo usa el CI y el editor) tiene que conocer los mismos perfiles que el
-    # catalogo: al añadir uno (docs/extender.md) es facil olvidarse de uno de los dos.
+    # catalogo: al añadir uno (docs/operador.md#ampliar-el-catálogo) es facil olvidarse de uno de los dos.
     vm_schema = json.load(open(os.path.join(ROOT, "schema", "vm.schema.json")))
     enum = set(vm_schema["properties"]["profile"].get("enum", []))
     if enum != set(profiles.get("vm_profiles") or {}):
@@ -474,10 +445,9 @@ def catalog_markdown(catalog, profiles):
     for k, s in catalog["cluster_sizes"].items():
         out.append(f"| `{k}` | `{k}-master` | `{k}-worker` | {s['min_workers']} / {s['default_workers']} | "
                    f"{s.get('k3s_version', '')} | {s.get('description', '')} |")
-    out += ["", "| Perfil de VM | Flavors admitidos | Bloques obligatorios | Qué instala |", "|---|---|---|---|"]
+    out += ["", "| Perfil de VM | Flavors admitidos | Qué instala |", "|---|---|---|"]
     for k, p in profiles["vm_profiles"].items():
-        req = ", ".join(f"`{r}:`" for r in p.get("requires", [])) or "—"
-        out.append(f"| `{k}` | {', '.join('`' + x + '`' for x in p['flavors'])} | {req} | {p['description']} |")
+        out.append(f"| `{k}` | {', '.join('`' + x + '`' for x in p['flavors'])} | {p['description']} |")
     return "\n".join(out) + "\n"
 
 
@@ -546,22 +516,6 @@ def pick_name(project, given, clusters, vms, kind):
     return name
 
 
-def latest_tag(repo):
-    """Ultimo tag de un repo de GitHub con gh, o None."""
-    if not shutil.which("gh"):
-        return None
-    r = subprocess.run(["gh", "api", f"repos/{repo}/tags", "--jq", ".[0].name"], capture_output=True, text=True)
-    return (r.stdout.strip() or None) if r.returncode == 0 else None
-
-
-def resolve_sha(repo, ref):
-    """SHA completo de un ref (rama o tag) con gh, o None."""
-    if not shutil.which("gh"):
-        return None
-    r = subprocess.run(["gh", "api", f"repos/{repo}/commits/{ref}", "--jq", ".sha"], capture_output=True, text=True)
-    return r.stdout.strip() if r.returncode == 0 and SHA_RE.match(r.stdout.strip()) else None
-
-
 def cmd_new_vm(args):
     platform, people, catalog, profiles, clusters, vms = load_all()
     print(bold("Nueva VM") + dim("  — Ctrl+C para cancelar, no se escribe nada hasta el final\n"))
@@ -576,24 +530,6 @@ def cmd_new_vm(args):
     if flavor not in allowed:
         die(f"El perfil '{profile}' no admite '{flavor}'. Admite: {', '.join(allowed)}")
     name = pick_name(project, args.name, clusters, vms, "VM")
-
-    mvp = None
-    if "mvp" in vp[profile].get("requires", []):
-        d = vp[profile].get("defaults", {}).get("mvp", {})
-        repo = args.mvp_repo or ask("Repositorio de los MVP (owner/repo)", d.get("repo"))
-        path = args.mvp_path or ask("Carpeta del MVP dentro del repo", d.get("path"))
-        ref = args.mvp_ref or ask("Commit (SHA) o tag del MVP; una rama se convierte en su SHA actual",
-                                  latest_tag(repo) or "main")
-        if not (SHA_RE.match(ref) or TAG_RE.match(ref)):
-            sha = resolve_sha(repo, ref)
-            if not sha:
-                die(f"'{ref}' no es un SHA ni un tag, y no pude resolverlo con gh. Pasa el SHA completo (40 caracteres).")
-            print(dim(f"  {ref} -> {sha} (fijado: una rama cambiaria sin PR)"))
-            ref = sha
-        mvp = {"repo": repo, "ref": ref, "path": path}
-        errs = validate_mvp(mvp)
-        if errs:
-            die("; ".join(errs))
 
     vmid, octet = allocate(platform, people, catalog, clusters, vms, project, 1)
     ip = f"{prefix_of(platform)}.{octet}"
@@ -611,10 +547,6 @@ def cmd_new_vm(args):
         f"vmid: {vmid}",
         f"ip: {ip}",
     ]
-    if mvp:
-        lines += ["mvp:", f"  repo: {mvp['repo']}",
-                  "  # SHA o tag, nunca una rama: lo desplegado es exactamente lo revisado en el PR.",
-                  f"  ref: {mvp['ref']}", f"  path: {mvp['path']}"]
     write_request(os.path.join(REQ_VMS, name + ".yaml"), lines, args,
                   summary=f"{name}: {flavor} ({fmt_res(fl[flavor])}), perfil {profile}, VMID {vmid}, IP {ip}, proyecto {project}")
 
@@ -680,7 +612,7 @@ def write_request(path, lines, args, summary):
     rel = os.path.relpath(path, ROOT)
     base = os.path.basename(path)[:-5]
     print(green("✓ ") + f"Escrito {rel}\n")
-    print(bold("Siguientes pasos") + dim("  (docs/inicio-rapido.md):"))
+    print(bold("Siguientes pasos") + dim("  (docs/peticiones.md):"))
     print(f"  1. git switch -c pide-{base} && git add {rel} && git commit -m 'Pide {base}'")
     print(f"  2. git push -u origin pide-{base}   (origin = TU fork) y abre el PR contra main")
     print("  3. El PR enseña el plan en un comentario; el admin lo revisa y mergea.")
@@ -772,7 +704,7 @@ def cmd_doctor(args):
     first_ip = next(iter(platform["proxmox"]["nodes"].values()))
     line(port_open("github.com", 443), "github.com:443")
     if not is_todo(first_ip):
-        line(port_open(first_ip, 22) or None, f"red de la plataforma ({first_ip})", "para make ssh / tunnel hace falta VPN a la red interna")
+        line(port_open(first_ip, 22) or None, f"red de la plataforma ({first_ip})", "para make ssh hace falta VPN a la red interna")
 
     if me and me in (people.get("admins") or {}):
         print(bold("Admin: plan/apply en local (break-glass)"))
@@ -911,9 +843,9 @@ def cmd_apply(args):
 
 # --- ansible ------------------------------------------------------------------
 
-# Orden de los playbooks conocidos. Los de un perfil nuevo (docs/extender.md) van
+# Orden de los playbooks conocidos. Los de un perfil nuevo (docs/operador.md#ampliar-el-catálogo) van
 # despues, en orden alfabetico: nunca se descartan.
-PLAYBOOK_ORDER = ["site", "k3s", "monitoring", "dataspace-kind"]
+PLAYBOOK_ORDER = ["site", "k3s", "monitoring"]
 
 
 def order_playbooks(books):
@@ -1087,7 +1019,7 @@ def enforce_pinned(found, ips, pinned_path, allow_new):
     presentar la MISMA clave, salvo que su VM se haya creado o recreado en este
     deploy (`allow_new`: nombres que el plan crea o reemplaza). Si no coincide, se
     para: o es una suplantacion o alguien recreo la VM fuera del pipeline
-    (docs/runbooks/clave-de-host-cambiada.md). Para las IPs que no responden se
+    (docs/runbooks.md#clave-de-host-cambiada). Para las IPs que no responden se
     conserva la clave anterior, asi un VM apagada no pierde su clave publicada.
     """
     pinned = parse_known_hosts(pinned_path)
@@ -1104,7 +1036,7 @@ def enforce_pinned(found, ips, pinned_path, allow_new):
     if bad:
         die("La clave de host de " + ", ".join(bad) + " NO coincide con la publicada y su VM no se ha creado en este"
             " deploy. Puede ser una suplantacion (MITM) o una VM recreada fuera del pipeline. No se sigue."
-            " Runbook: docs/runbooks/clave-de-host-cambiada.md")
+            " Runbook: docs/runbooks.md#clave-de-host-cambiada")
     for ip in set(ips.values()) - set(found):
         if ip in pinned and ip not in new_ips:
             found[ip] = [f"{ip} {t} {k}" for t, k in pinned[ip].items()]
@@ -1149,85 +1081,18 @@ def cmd_ssh(args):
     os.execvp("ssh", ["ssh", *ssh_opts(ip), f"{ssh_user()}@{ip}"])
 
 
-# Donde deja el rol dataspace_mvp cada MVP (cuenta de servicio `dataspace`).
-MVP_ENV = "/home/dataspace/dataspace-mvp/{path}/scripts/herramientas/mvp.env"
-
-
-def remote_mvp_env(ip, path):
-    """KIND_IP, ENVOY_PORT, PREFIJO... del MVP desplegado en la VM (lee su mvp.env)."""
-    r = subprocess.run(["ssh", *ssh_opts(ip), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                        f"{ssh_user()}@{ip}", "cat " + MVP_ENV.format(path=path)],
-                       capture_output=True, text=True, timeout=30)
-    return dict(re.findall(r"(?m)^([A-Z_]+)=['\"]?([^'\"\n]*)['\"]?$", r.stdout)) if r.returncode == 0 else {}
-
-
-def local_port_problem(port):
-    """Por que no se puede abrir ese puerto en este equipo (p. ej. lo usa un kind local), o None."""
-    import errno
-    for fam, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-        try:
-            with socket.socket(fam, socket.SOCK_STREAM) as s:
-                s.bind((host, port))
-        except OSError as e:
-            if e.errno == errno.EADDRINUSE:
-                return "ocupado"
-            if e.errno == errno.EACCES:
-                return "<1024: exige sudo"
-    return None
-
-
-def cmd_tunnel(args):
-    _, _, _, _, clusters, vms = load_all()
-    v = vms.get(args.name)
-    if not v or not v.get("mvp"):
-        die(f"'{args.name}' no es una VM con MVP (perfil dataspace-kind). Para otras: make ssh NAME={args.name}")
-    ip = vm_ip(args.name)
-    env = remote_mvp_env(ip, v["mvp"]["path"])
-    if not env:
-        die(f"No pude leer el MVP en {args.name}. ¿Ya se ha desplegado? (make ssh NAME={args.name})")
-    kind_ip, prefix = env.get("KIND_IP", "127.0.0.1"), env.get("PREFIJO", "")
-    try:
-        http = int(os.environ.get("HTTP_PORT", "8080"))
-        envoy_remote = int(env.get("ENVOY_PORT", "8081"))
-        envoy = int(os.environ.get("ENVOY_PORT", str(envoy_remote)))
-    except ValueError:
-        die("HTTP_PORT y ENVOY_PORT tienen que ser numeros de puerto.")
-    bad = [(var, p, why) for var, p in (("HTTP_PORT", http), ("ENVOY_PORT", envoy)) if (why := local_port_problem(p))]
-    if bad:
-        # ssh solo avisaria y seguiria: el navegador acabaria en lo que ya escucha ahi
-        # (tipicamente un kind local) sin que nadie se entere.
-        die("No puedo abrir estos puertos locales:\n" + "\n".join(f"  {p} ({why}): cambialo con {var}=<otro>" for var, p, why in bad))
-    print(bold(f"Tunel al MVP de {args.name} ({ip}). Ctrl+C para cerrarlo."))
-    print(f"  Entrada (Traefik):   http://localhost:{http}{prefix}/<participante>/cp   (rutas: README.md del MVP)")
-    if env.get("OBSERVABILIDAD"):
-        print(f"  Observabilidad:      http://localhost:{http}{prefix}/kibana/   http://localhost:{http}{prefix}/jaeger/")
-    print(f"  Descargas PULL:      http://localhost:{envoy}/flows/<id>")
-    print(dim(f"  El MVP escucha en {kind_ip} DENTRO de la VM: el tunel es la forma de entrar, no se expone a la red."))
-    sys.stdout.flush()   # execvp no vacia el buffer
-    fwd = ["-L", f"{http}:{kind_ip}:80", "-L", f"{envoy}:{kind_ip}:{envoy_remote}"]
-    os.execvp("ssh", ["ssh", *ssh_opts(ip), "-N", "-o", "ExitOnForwardFailure=yes", *fwd, f"{ssh_user()}@{ip}"])
-
-
 def cmd_kubeconfig(args):
     platform, people, catalog, profiles, clusters, vms = load_all()
     ip = vm_ip(args.name)
     out = os.path.join(ANSIBLE_DIR, "kubeconfigs", f"{args.name}.yaml")
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    if args.name in clusters:
-        remote, server = "sudo cat /etc/rancher/k3s/k3s.yaml", f"https://{ip}:6443"
-    else:
-        remote, server = "kind get kubeconfig --name \"$(kind get clusters | head -1)\"", None
+    if args.name not in clusters:
+        die(f"'{args.name}' no es un cluster k3s. Para una VM: make ssh NAME={args.name}")
+    remote, server = "sudo cat /etc/rancher/k3s/k3s.yaml", f"https://{ip}:6443"
     r = subprocess.run(["ssh", *ssh_opts(ip), f"{ssh_user()}@{ip}", remote], capture_output=True, text=True)
     if r.returncode != 0:
         die(f"No pude leer el kubeconfig de {args.name}: {r.stderr.strip()}")
-    cfg = r.stdout
-    if server:
-        cfg = re.sub(r"server: https://127\.0\.0\.1:6443", f"server: {server}", cfg)
-    else:
-        m = re.search(r"server: https://127\.0\.0\.1:(\d+)", cfg)
-        if m:
-            print(dim(f"kind: la API escucha en 127.0.0.1:{m.group(1)} de la VM. Abre antes:  "
-                      f"ssh -N -L {m.group(1)}:127.0.0.1:{m.group(1)} {ssh_user()}@{ip}"))
+    cfg = re.sub(r"server: https://127\.0\.0\.1:6443", f"server: {server}", r.stdout)
     with open(out, "w") as f:
         f.write(cfg)
     os.chmod(out, 0o600)
@@ -1240,7 +1105,7 @@ def cmd_kubeconfig(args):
 # Privilegios del token de escritura (Proxmox VE 9). Solo lo que usa el repo:
 # crear/configurar/borrar VMs, asignar disco, descargar la imagen
 # (Datastore.AllocateTemplate + Sys.AccessNetwork en el nodo, en vez de Sys.Modify
-# en "/") y usar el bridge (SDN.Use). Detalle por privilegio: docs/credenciales.md.
+# en "/") y usar el bridge (SDN.Use). Detalle por privilegio: docs/seguridad.md#inventario-de-secretos.
 APPLY_PRIVS = ("VM.Allocate VM.Audit VM.Clone VM.Config.CDROM VM.Config.CPU VM.Config.Cloudinit VM.Config.Disk "
                "VM.Config.HWType VM.Config.Memory VM.Config.Network VM.Config.Options VM.GuestAgent.Audit VM.PowerMgmt "
                "Pool.Audit Datastore.AllocateSpace Datastore.AllocateTemplate Datastore.Audit SDN.Use Sys.Audit Sys.AccessNetwork")
@@ -1254,7 +1119,7 @@ def cmd_proxmox_acl(args):
     paths = ([f"/pool/{p}" for p in pools] + [f"/storage/{px['datastore']}", f"/storage/{px['image_datastore']}",
              f"/sdn/zones/{px.get('sdn_zone', 'localnetwork')}"] + [f"/nodes/{n}" for n in px["nodes"]])
     print("# Generado por `make proxmox-acl` desde platform.yaml + projects.yaml. Ejecutar como root en un nodo.")
-    print("# Idempotente: se puede repetir tras dar de alta un proyecto. Detalle: docs/credenciales.md")
+    print("# Idempotente: se puede repetir tras dar de alta un proyecto. Detalle: docs/seguridad.md#inventario-de-secretos")
     print("set -e")
     print(f"pveum role add IaCApply -privs '{APPLY_PRIVS}' 2>/dev/null || pveum role modify IaCApply -privs '{APPLY_PRIVS}'")
     print("pveum user add iac@pve -comment 'pve-platform-iac (solo tokens, sin password)' 2>/dev/null || true")
@@ -1304,7 +1169,6 @@ def cmd_preflight(args):
     """Comprueba que la configuracion externa (docs/bootstrap.md) esta hecha."""
     platform, people, _catalog, _profiles, _clusters, vms = load_all()
     fails = []
-    uses_dataspace = any((v or {}).get("profile") == "dataspace-kind" for v in vms.values())
 
     def line(good, msg, fix=""):
         print(f"  {green('✓') if good else (yellow('!') if good is None else red('✗'))} {msg}"
@@ -1383,15 +1247,11 @@ def cmd_preflight(args):
                  "production solo despliega desde main", "Environments -> production -> Deployment branches: main")
             sec = {s["name"] for s in (gh(f"repos/{repo}/environments/production/secrets") or {}).get("secrets", [])}
             for s in ("PM_APPLY_TOKEN", "TF_API_TOKEN", "ANSIBLE_SSH_KEY", "PLAN_ENC_KEY"):
-                line(s in sec, f"secreto production/{s}", "docs/credenciales.md")
-            # Extra dataspace-kind: solo si hay peticiones de ese perfil (docs/dataspace.md).
-            for s in ("GHCR_READ_TOKEN", "DATASPACE_MVP_DEPLOY_KEY"):
-                line((s in sec) or (None if not uses_dataspace else False),
-                     f"secreto production/{s} (extra dataspace-kind)", "docs/dataspace.md")
+                line(s in sec, f"secreto production/{s}", "docs/seguridad.md#inventario-de-secretos")
         if "plan" in envs:
             sec = {s["name"] for s in (gh(f"repos/{repo}/environments/plan/secrets") or {}).get("secrets", [])}
             for s in ("PM_PLAN_TOKEN", "TF_API_TOKEN"):
-                line(s in sec, f"secreto plan/{s}", "docs/credenciales.md")
+                line(s in sec, f"secreto plan/{s}", "docs/seguridad.md#inventario-de-secretos")
         repo_secrets = {s["name"] for s in (gh(f"repos/{repo}/actions/secrets") or {}).get("secrets", [])}
         line(not repo_secrets, "ningun secreto a nivel de repo (todos en environments)",
              f"muevelos a un environment: {', '.join(sorted(repo_secrets))}")
@@ -1415,7 +1275,7 @@ def main():
     s.set_defaults(f=cmd_flavors)
 
     s = sub.add_parser("new-vm", help="asistente: pide una VM")
-    for a in ("name", "project", "flavor", "profile", "mvp-repo", "mvp-ref", "mvp-path"):
+    for a in ("name", "project", "flavor", "profile"):
         s.add_argument(f"--{a}")
     s.add_argument("-y", "--yes", action="store_true")
     s.set_defaults(f=cmd_new_vm)
@@ -1462,8 +1322,7 @@ def main():
                    help="con --pinned: VMs creadas/recreadas en este deploy (pueden traer clave nueva)")
     s.set_defaults(f=cmd_known_hosts)
 
-    for c, fn, h in (("ssh", cmd_ssh, "ssh a una VM"), ("tunnel", cmd_tunnel, "tunel al MVP de una VM dataspace-kind"),
-                     ("kubeconfig", cmd_kubeconfig, "trae el kubeconfig")):
+    for c, fn, h in (("ssh", cmd_ssh, "ssh a una VM"), ("kubeconfig", cmd_kubeconfig, "trae el kubeconfig")):
         s = sub.add_parser(c, help=h)
         s.add_argument("name")
         s.set_defaults(f=fn)
@@ -1476,7 +1335,7 @@ def main():
     sub.add_parser("preflight", help="(admin) comprueba la configuracion externa").set_defaults(f=cmd_preflight)
 
     # Lo que el CLI no conoce se pasa tal cual a ansible-playbook en `configure`
-    # (p. ej. -e mvp_recreate=true); en el resto de comandos es un error.
+    # (p. ej. --tags base -v); en el resto de comandos es un error.
     args, unknown = p.parse_known_args()
     if unknown and args.cmd != "configure":
         p.error(f"argumentos no reconocidos: {' '.join(unknown)}")

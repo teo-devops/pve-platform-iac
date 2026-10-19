@@ -17,14 +17,13 @@ output "k3s_cluster_meta" {
 }
 
 output "standalone_vms" {
-  description = "Por VM suelta: ip, vmid, proyecto, perfil (decide los playbooks) y MVP"
+  description = "Por VM suelta: ip, vmid, proyecto, y perfil (decide los playbooks)"
   value = {
     for k, v in module.standalone_vm : k => {
       ip      = v.ip_address
       vmid    = v.vmid
       project = local.standalone_vms[k].project
       profile = local.standalone_vms[k].profile
-      mvp     = local.standalone_vms[k].mvp
     }
   }
 }

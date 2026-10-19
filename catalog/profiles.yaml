@@ -4,7 +4,6 @@
 #
 # `flavors` limita los tamaños con sentido para cada perfil: el asistente solo
 # ofrece esos y `make check` (y el plan) rechazan el resto.
-# `requires` son bloques obligatorios en la peticion (ver docs/peticiones.md).
 
 vm_profiles:
   vm:
@@ -16,19 +15,6 @@ vm_profiles:
     description: Prometheus + Grafana que monitorizan todas las VMs del repo
     playbooks: [site, monitoring]
     flavors: [vm-medium, vm-large]
-
-  # EXTRA (opcional): ejemplo de perfil con una carga propia. Depende de un repo e
-  # imagenes privadas (teo-devops/dataspace-mvp); si no lo usas, borra este bloque y
-  # sus flavors ds-mvp-* (docs/extender.md explica como hacer el tuyo).
-  dataspace-kind:
-    description: "Extra: Docker + kind con un MVP de dataspace (teo-devops/dataspace-mvp) desplegado"
-    playbooks: [site, dataspace-kind]
-    flavors: [ds-mvp-kind, ds-mvp-kind-lite]
-    requires: [mvp]
-    defaults:
-      mvp:
-        repo: teo-devops/dataspace-mvp
-        path: demo
 
 # Los clusters no eligen perfil: lo implica la familia (cluster_sizes en
 # flavors.yaml). Esto solo agrupa las familias para el asistente.
