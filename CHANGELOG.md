@@ -4,6 +4,24 @@ Cambios con impacto para quien usa u opera la plataforma. Formato: versión y fe
 está documentado. Versionado semántico; mientras sea `0.x`, puede haber cambios incompatibles entre
 versiones menores.
 
+## Sin publicar — 19-oct-2026 — Plantilla genérica y documentación unificada
+
+- **Se retira el extra `dataspace-kind`** (cambio incompatible si lo usabas): el perfil, los flavors
+  `ds-mvp-kind` y `ds-mvp-kind-lite`, los roles `kind_host` y `dataspace_mvp`, el bloque `mvp:` de
+  las peticiones, `make tunnel` y los secretos `GHCR_READ_TOKEN`, `GHCR_USER` y
+  `DATASPACE_MVP_DEPLOY_KEY`. D-11 y R-13 quedan retirados. `make kubeconfig` solo admite clusters k3s.
+- **README** reescrito para usuarios (qué problema resuelve, quién hace qué, primeros pasos), en
+  inglés ([README.md](README.md)) y en español ([README.es.md](README.es.md)) con el mismo contenido.
+- **Documentación unificada** en seis documentos:
+  - [docs/peticiones.md](docs/peticiones.md) absorbe `inicio-rapido.md`;
+  - [docs/operador.md](docs/operador.md) absorbe `extender.md`;
+  - [docs/diseno.md](docs/diseno.md) absorbe `pipeline.md`;
+  - [docs/seguridad.md](docs/seguridad.md) absorbe `credenciales.md`;
+  - [docs/runbooks.md](docs/runbooks.md) reúne los siete runbooks;
+  - `docs/README.md` desaparece: el índice está en el README.
+- Coherencia: modelos A y B de GitHub en todos los documentos, Cloudflare y las copias como
+  opcionales en [docs/bootstrap.md](docs/bootstrap.md), primer deploy con una VM `vm`.
+
 ## v0.1.0-beta — 15-oct-2026 — Plataforma para empresas y pymes, pública
 
 - **Nombre y enfoque:** `homelab-iac` pasa a ser `pve-platform-iac`, autoservicio de VMs para
@@ -23,7 +41,7 @@ versiones menores.
     [bootstrap.md §1](docs/bootstrap.md#1-organización-de-github-o-cuenta-personal).
   - Nuevos riesgos aceptados A-11 y A-12.
 - **Plantilla:** `examples/` y `make init OWNER=…`.
-- **Extender el catálogo:** [docs/extender.md](docs/extender.md).
+- **Extender el catálogo:** `docs/extender.md` (hoy, [docs/operador.md](docs/operador.md#ampliar-el-catálogo)).
   - `configure` ya no descarta los playbooks de perfiles nuevos.
   - `make check` comprueba que el esquema y el catálogo tienen los mismos perfiles.
 - **Dataspace:** el perfil `dataspace-kind` pasa a ser un extra opcional. Sus secretos solo se
@@ -44,10 +62,10 @@ versiones menores.
   las VMs.
 - VPN de los devs con Cloudflare Zero Trust: túnel `cloudflared` y cliente WARP con login de GitHub
   (D-13, [docs/bootstrap.md §10](docs/bootstrap.md#10-acceso-de-los-devs-a-las-vms-vpn)), y sus
-  credenciales en [docs/credenciales.md](docs/credenciales.md#túnel-de-cloudflare).
+  credenciales en `docs/credenciales.md` (hoy, [docs/seguridad.md](docs/seguridad.md#túnel-de-cloudflare)).
 - Copias de seguridad con Proxmox Backup Server 4 y datastore en S3 (SeaweedFS), cifradas en el nodo
   (D-14, [docs/bootstrap.md §11](docs/bootstrap.md#11-copias-de-seguridad-proxmox-backup-server-sobre-seaweedfs-s3)),
-  runbook [restaurar-vm.md](docs/runbooks/restaurar-vm.md) y riesgo A-10 (pérdida de la clave).
+  runbook `restaurar-vm.md` (hoy, [docs/runbooks.md](docs/runbooks.md#restaurar-una-vm)) y riesgo A-10 (pérdida de la clave).
 - [docs/seguridad.md](docs/seguridad.md): riesgo aceptado A-9 (red plana entre proyectos).
 - `platform.yaml`: `image_datastore` necesita el contenido `import` (antes decía «iso», por error).
 - Claves SSH del admin y del CI en `projects.yaml`; cómo cambia de PC un admin en
@@ -59,12 +77,12 @@ Plataforma GitOps para Proxmox VE, derivada de un diseño interno anterior. Deci
 [docs/diseno.md](docs/diseno.md); comparación con ese diseño en
 [docs/diseno.md](docs/diseno.md#qué-viene-del-diseño-anterior-y-qué-cambia).
 
-- GitHub Actions con cuatro workflows: `pr-validate`, `pr-plan`, `deploy` y `drift` ([docs/pipeline.md](docs/pipeline.md)).
+- GitHub Actions con cuatro workflows: `pr-validate`, `pr-plan`, `deploy` y `drift` (`docs/pipeline.md`, hoy [docs/diseno.md](docs/diseno.md#pipeline)).
 - Estado en HCP Terraform, con ejecución local (D-03).
 - Modelo por proyectos (`projects.yaml`): pool, rangos y miembros; acceso SSH solo a las VMs del
   propio proyecto, con las claves de GitHub (D-10).
 - Endurecimiento: dos runners efímeros (D-02, R-08), plan de PR sin código del PR (D-05, R-02), plan
   cifrado y aplicado tal cual (D-06, R-09), TLS verificado (R-03), claves de host estrictas (D-09, R-04),
   imagen fijada y verificada (D-07, R-05), sin SSH a los nodos (D-08, R-06) y tokens sin ACL en `/` (R-07).
-- Perfil `dataspace-kind` para los MVP de `teo-devops/dataspace-mvp` (D-11, [docs/dataspace.md](docs/dataspace.md)).
+- Perfil `dataspace-kind` para los MVP de `teo-devops/dataspace-mvp` (D-11, `docs/dataspace.md`; retirado el 19-oct-2026).
 - Imagen base: Ubuntu 24.04 `release-20260926` (sha256 `6a81c375…bb4d2`, firma verificada).

@@ -14,7 +14,7 @@
 #
 # Runner: `platform-apply` (grupo de runners restringido a deploy.yml y drift.yml en
 # main; docs/bootstrap.md §6). Secretos: environment `production`, que solo
-# despliega desde main (docs/credenciales.md).
+# despliega desde main (docs/seguridad.md#inventario-de-secretos).
 name: deploy
 
 on:
@@ -30,7 +30,7 @@ on:
         description: >-
           (Solo admin) VMs, separadas por comas, cuya clave de host nueva se acepta
           porque se ha verificado en la consola de Proxmox
-          (docs/runbooks/clave-de-host-cambiada.md). Vacio = ninguna.
+          (docs/runbooks.md#clave-de-host-cambiada). Vacio = ninguna.
         required: false
         default: ""
 
@@ -193,15 +193,10 @@ jobs:
     if: always() && needs.known-hosts.result == 'success'
     runs-on: [self-hosted, platform-apply]
     environment: production
-    # Por encima del limite de cada despliegue de MVP (mvp_timeout, 45 min) para que
-    # falle el despliegue con su diagnostico y no el job a ciegas.
-    timeout-minutes: 75
+    timeout-minutes: 45
     env:
       TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
       ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
-      GHCR_USER: ${{ vars.GHCR_USER }}
-      GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
-      DATASPACE_MVP_DEPLOY_KEY: ${{ secrets.DATASPACE_MVP_DEPLOY_KEY }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

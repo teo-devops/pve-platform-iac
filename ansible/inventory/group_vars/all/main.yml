@@ -13,7 +13,7 @@ ntp_servers:
 # Paquetes instalados automáticamente en todas las máquinas virtuales del inventario
 base_packages:
   # acl (setfacl): sin el, Ansible no puede pasar de ops a otra cuenta sin
-  # privilegios (become_user), p. ej. el clon del MVP con la cuenta de servicio dataspace.
+  # privilegios (become_user).
   - acl
   - qemu-guest-agent
   - chrony

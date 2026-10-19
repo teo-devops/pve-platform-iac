@@ -25,8 +25,8 @@
   community.general.timezone:
     name: "{{ timezone }}"
 
-# Config explicita de chrony: un reloj desviado rompe TLS, los tokens de
-# Keycloak/DCP del dataspace y el consenso de k3s (etcd).
+# Config explicita de chrony: un reloj desviado rompe TLS, los tokens con
+# caducidad y el consenso de k3s (etcd).
 - name: Desplegar configuracion de chrony
   ansible.builtin.template:
     src: chrony.conf.j2

@@ -8,7 +8,7 @@
 #   1 -> error del plan: el job falla igual, sin issue.
 #
 # NO CORRIGE NADA. Decide el admin: revertir el cambio manual o llevarlo a Git
-# (docs/runbooks/deriva-detectada.md). -lock=false: solo lee.
+# (docs/runbooks.md#deriva-detectada). -lock=false: solo lee.
 #
 # Mismo runner y secretos que deploy (platform-apply, environment production):
 # refrescar una VM exige VM.Config.Disk, que el token de plan no tiene.
@@ -82,7 +82,7 @@ jobs:
         run: |
           {
             echo "La comprobacion diaria ha encontrado cambios en Proxmox que no vienen de \`main\`."
-            echo "Nada se ha corregido automaticamente. Runbook: \`docs/runbooks/deriva-detectada.md\`."
+            echo "Nada se ha corregido automaticamente. Runbook: \`docs/runbooks.md#deriva-detectada\`."
             echo
             cat drift.md
             echo

@@ -20,8 +20,8 @@ Este repo es dos cosas a la vez, y se colabora distinto en cada una:
 
 ## Pedir infraestructura
 
-Para los equipos de una instalación (colaboradores de la empresa y freelancers). Primeros pasos:
-[docs/inicio-rapido.md](docs/inicio-rapido.md).
+Para los equipos de una instalación (colaboradores de la empresa y freelancers). Paso a paso:
+[docs/peticiones.md](docs/peticiones.md).
 
 ### Lo esencial
 
@@ -29,8 +29,8 @@ Para los equipos de una instalación (colaboradores de la empresa y freelancers)
 - **Un PR = una cosa.** Lo ideal: un PR que solo toca `requests/`. Así recibe el plan automático en
   un comentario y se revisa rápido.
 - **Pide solo para tus proyectos** y solo lo que vayas a usar. Bórralo cuando termines (`make remove`).
-- **No escribas a mano `vmid` ni `ip`**: usa `make new-vm` / `make new-cluster`, que buscan uno libre
-  en el rango de tu proyecto.
+- **No escribas a mano `vmid` ni `ip`, ni renombres peticiones**: usa los asistentes
+  ([reglas comunes](docs/peticiones.md#reglas-comunes)).
 - **Nunca subas secretos** (tokens, claves privadas, kubeconfigs). Aunque el repo sea privado, lo
   leen todos los colaboradores de todos los proyectos; si es público, cualquiera.
 
@@ -47,18 +47,15 @@ Para los equipos de una instalación (colaboradores de la empresa y freelancers)
 ### Requisitos de un PR
 
 - `make check` y `make lint` en verde en local (son los mismos checks que el CI).
-- Si cambias cómo funciona algo, cambias su documentación **en el mismo PR**
-  ([docs/README.md](docs/README.md#convenciones-de-esta-documentación)).
-- Mensajes de commit en español, en presente: «Pide dataspace-demo», «Añade el perfil X».
+- Si cambias cómo funciona algo, cambias su documentación **en el mismo PR**. El CI comprueba los
+  enlaces internos (`scripts/check-docs-links.py`) y la tabla del catálogo (`make docs`).
+- Mensajes de commit en español o en inglés, en presente: «Pide equipo-a-db», «Add the X profile».
 - Si tu PR destruye o recrea algo (renombrar o borrar una petición), dilo en la descripción.
 
 ### Acceso a las VMs
 
-- Entras con tu usuario de GitHub (en minúsculas) y las claves SSH de tu perfil de GitHub.
-- Solo tienes cuenta en las VMs de los proyectos en los que estás.
-- Tienes `sudo` en ellas: son tus máquinas de desarrollo. No cambies su red ni su configuración de SSH
-  (lo gestiona Ansible y se revertiría), y no copies datos de otros proyectos.
-- Si `make ssh` avisa de que la clave de host ha cambiado, **no entres** y avisa al admin.
+Cómo entras, qué puedes hacer en ellas y qué hacer si cambia la clave de host:
+[docs/peticiones.md §5](docs/peticiones.md#5-usa-lo-que-has-creado).
 
 ### Si algo va mal
 

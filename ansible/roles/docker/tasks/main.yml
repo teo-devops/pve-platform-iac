@@ -56,9 +56,8 @@
     state: started
 
 
-# Quien entra en la VM usa docker sin sudo: lo necesitan kind y los scripts del
-# MVP de dataspace, que llaman a `docker` directamente. Las cuentas personales
-# las crea el rol base (vm_access).
+# Quien entra en la VM usa docker sin sudo (D-12). Las cuentas personales las
+# crea el rol base (vm_access).
 - name: Dar acceso a Docker a ops y a las cuentas personales
   ansible.builtin.user:
     name: "{{ item }}"

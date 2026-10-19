@@ -4,7 +4,7 @@
 # platform.yaml, los proyectos de projects.yaml, el catalogo de catalog/ y las
 # peticiones de requests/ (requests.tf). Asi nadie edita HCL para pedir una VM.
 
-# Token de API de Proxmox. Dos, segun el job (docs/credenciales.md):
+# Token de API de Proxmox. Dos, segun el job (docs/seguridad.md#inventario-de-secretos):
 #   iac@pve!plan  -> PVEAuditor en los pools: planes de PR (sin refrescar)
 #   iac@pve!apply -> rol IaCApply en los pools: plan de main, apply y deriva
 # Ninguno tiene ACL en "/" (`make proxmox-acl`, docs/seguridad.md R-07).

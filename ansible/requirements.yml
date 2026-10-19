@@ -4,7 +4,7 @@
 #
 #   cd ansible && ansible-galaxy collection install -r requirements.yml
 collections:
-  # roles/base -> community.general.timezone; roles/dataspace_mvp -> community.general.npm
+  # roles/base -> community.general.timezone
   - name: community.general
     version: ">=8.0.0"
 
@@ -12,6 +12,6 @@ collections:
   - name: community.docker
     version: ">=3.10.0"
 
-  # roles/kind_host -> ansible.posix.sysctl
+  # roles/base -> ansible.posix.authorized_key
   - name: ansible.posix
     version: ">=1.5.0"

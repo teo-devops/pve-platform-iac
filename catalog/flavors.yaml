@@ -26,21 +26,6 @@ flavors:
     disk: 160
     description: VM para servicios pesados
 
-  # --- Dataspace MVP sobre kind (una VM, el MVP entero dentro) ---------------
-  # El MVP `demo` de dataspace-mvp pide ~7.2 GiB en kind con observabilidad
-  # (Elasticsearch + Kibana + Jaeger); con menos de 16 GB, Elasticsearch es lo
-  # primero que mata el OOM. Las imagenes se precargan: hace falta disco.
-  ds-mvp-kind:
-    cores: 8
-    memory: 16384
-    disk: 120
-    description: "Dataspace: MVP completo en kind, con observabilidad"
-  ds-mvp-kind-lite:
-    cores: 4
-    memory: 12288
-    disk: 80
-    description: "Dataspace: MVP en kind sin observabilidad (observability.components vacio en mvp.yaml)"
-
   # --- Nodos de clusters k3s (se piden por familia, ver cluster_sizes) -------
   k3s-mini-master:
     cores: 2

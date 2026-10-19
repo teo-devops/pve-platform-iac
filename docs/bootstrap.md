@@ -5,8 +5,8 @@ repo** (organización, ruleset, environments, HCP, runners, ACL de Proxmox y CA)
 
 **Antes de empezar necesitas:** acceso root a un nodo de Proxmox VE 8.4 o posterior (probado con
 9.x), ser owner de la organización de GitHub (o poder crearla), una cuenta en HCP Terraform y un host
-pequeño en la infraestructura para los runners (LXC o VM con Docker: 2 vCPU y 4 GB bastan), una cuenta de
-Cloudflare para la VPN de los devs (§10) y un bucket en tu SeaweedFS para las copias (§11). En tu máquina:
+pequeño junto al cluster para los runners (LXC o VM con Docker: 2 vCPU y 4 GB bastan). Opcionales: una
+cuenta de Cloudflare para la VPN de los devs (§10) y un bucket S3 para las copias (§11). En tu máquina:
 `gh` autenticado con permisos de admin (`gh auth refresh -s admin:org`), `terraform`, `python3` con
 PyYAML, `jq` y `curl`.
 
@@ -14,8 +14,8 @@ PyYAML, `jq` y `curl`.
 
 En los comandos, sustituye `<ORG>` por la organización de GitHub y `<HCP_ORG>` por la de HCP.
 
-Orden: §0 (Proxmox, con platform-proxmox) → §1–§9 (repo, GitHub, HCP, tokens, primer deploy) → §10 (acceso de los devs)
-→ §11 (copias de seguridad).
+Orden: §0 (Proxmox, con platform-proxmox) → §1–§9 (repo, GitHub, HCP, tokens, primer deploy) → §10 (acceso de los devs,
+opcional) → §11 (copias de seguridad, opcional pero muy recomendable).
 
 ## 0. Proxmox: lo que tiene que estar antes
 
@@ -221,28 +221,18 @@ gh api -X POST repos/$R/environments/plan/deployment-branch-policies -f name=mai
 ```
 
 Secretos (cada uno se pega por la entrada estándar: no queda en el historial). Qué es cada uno y
-cómo rotarlo: [credenciales.md](credenciales.md).
+cómo rotarlo: [seguridad.md](seguridad.md#inventario-de-secretos).
 
 ```sh
 gh secret set PM_APPLY_TOKEN           -R $R --env production   # iac@pve!apply=<uuid>  (§8)
 gh secret set TF_API_TOKEN             -R $R --env production   # token de HCP          (§7)
 gh secret set ANSIBLE_SSH_KEY          -R $R --env production < ci   # privada de la cuenta ci (§2)
 openssl rand -base64 48 | gh secret set PLAN_ENC_KEY -R $R --env production
-gh secret set GHCR_READ_TOKEN          -R $R --env production   # PAT clasico, solo read:packages
-gh secret set DATASPACE_MVP_DEPLOY_KEY -R $R --env production < dataspace-mvp-deploy   # ver abajo
 gh secret set PM_PLAN_TOKEN            -R $R --env plan         # iac@pve!plan=<uuid>   (§8)
 gh secret set TF_API_TOKEN             -R $R --env plan         # el mismo token de HCP
-shred -u ci dataspace-mvp-deploy
+shred -u ci
 
 gh variable set TF_CLOUD_ORGANIZATION -R $R --body <HCP_ORG>
-gh variable set GHCR_USER             -R $R --body <usuario dueño del token de ghcr>
-```
-
-Deploy key de `dataspace-mvp` (solo lectura):
-
-```sh
-ssh-keygen -t ed25519 -f dataspace-mvp-deploy -C pve-platform-iac -N ''
-gh repo deploy-key add dataspace-mvp-deploy.pub -R teo-devops/dataspace-mvp -t pve-platform-iac   # sin --allow-write
 ```
 
 ## 6. Runners propios
@@ -321,17 +311,17 @@ y anótalo en el CHANGELOG.
 ## 9. Primer deploy
 
 1. `make preflight` en verde.
-2. PR con la primera petición (p. ej. un MVP: [dataspace.md](dataspace.md)). Comprueba que
-   `pr-validate` pasa y que `pr-plan` comenta el plan.
+2. PR con la primera petición: una VM `vm-small` con el perfil `vm` (`make new-vm`,
+   [peticiones.md](peticiones.md)). Comprueba que `pr-validate` pasa y que `pr-plan` comenta el plan.
 3. Merge → `deploy`: `plan`, `apply`, `known-hosts` (avisa «primer deploy: TOFU») y `configure`.
 4. `make ssh NAME=<vm>` desde tu máquina.
 5. Lanza `drift` a mano (Actions → drift → Run workflow): tiene que decir «Sin deriva».
-6. Anota la fecha en el README (sección «Estado»).
+6. Anota la fecha en la sección «Status» / «Estado» de README.md y README.es.md.
 
 ## 10. Acceso de los devs a las VMs (VPN)
 
 Las VMs viven en la red privada de la infraestructura. Para **pedirlas** no hace falta red (es un PR), pero
-para **entrar** por `make ssh` o `make tunnel` sí. La VPN es **Cloudflare Zero Trust**
+para **entrar** por `make ssh` o `make kubeconfig` sí. La VPN es **Cloudflare Zero Trust**
 ([D-13](diseno.md#decisiones)): no se abre ningún puerto del router.
 
 ```
@@ -340,7 +330,7 @@ WARP (login con GitHub) ──► Gateway: ¿quién eres? ¿puedes? ──► t�
                                                                 (saliente)   (LXC)
 ```
 
-- `cloudflared` corre en un LXC de la plataforma y abre un túnel **saliente** hacia Cloudflare.
+- `cloudflared` corre en un LXC junto al cluster y abre un túnel **saliente** hacia Cloudflare.
 - Cada dev instala el cliente **WARP** y entra en la organización de Zero Trust con su cuenta de
   GitHub. Desde ese momento, el tráfico hacia la red de las VMs va por el túnel.
 - Las **políticas de Gateway** deciden a qué puede llegar cada persona: los devs, solo al `:22` de
@@ -383,7 +373,7 @@ En los comandos, `<TEAM>` es el nombre de tu organización de Zero Trust, `<VMS>
    apt update && apt install -y cloudflared
    cloudflared service install <TOKEN-DEL-TUNEL>      # queda como servicio systemd
    ```
-   El token es una credencial ([credenciales.md](credenciales.md#túnel-de-cloudflare)). En la
+   El token es una credencial ([seguridad.md](seguridad.md#túnel-de-cloudflare)). En la
    pestaña de rutas del túnel (*CIDR* / *Private networks*), añade `<VMS>` y `<GESTION>`. El túnel
    tiene que salir como **HEALTHY**.
 5. **Qué tráfico va por WARP.** Settings → WARP Client → Device settings → perfil Default → Split
@@ -407,7 +397,7 @@ En los comandos, `<TEAM>` es el nombre de tu organización de Zero Trust, `<VMS>
    la red sigue plana ([A-9](seguridad.md#riesgos-aceptados)). Esas listas se mantienen a mano,
    junto con `projects.yaml` ([operador.md](operador.md#alta-y-baja-de-una-persona)).
 8. **Prueba como dev**, desde un portátil que no sea el del admin (lo que tiene que hacer cada dev
-   está en [inicio-rapido.md](inicio-rapido.md)):
+   está en [peticiones.md](peticiones.md#1-antes-de-empezar)):
 
    ```sh
    warp-cli registration new <TEAM>     # abre el navegador: login con GitHub
@@ -519,9 +509,9 @@ En los comandos: `<S3>` es el host del S3 de SeaweedFS, `<PBS>` la IP de la VM d
    ```
    > [!IMPORTANT]
    > `autogen` crea la clave en `/etc/pve/priv/storage/pbs-platform.enc`. **Sin esa clave no se puede
-   > restaurar ninguna copia**, y si cae el host, cae con él. Guarda su contenido **fuera del
+   > restaurar ninguna copia**, y si cae el host, cae con él. Guarda su contenido **fuera de
    > la infraestructura** (gestor de contraseñas) ahora mismo
-   > ([credenciales.md](credenciales.md#copias-de-seguridad)).
+   > ([seguridad.md](seguridad.md#copias-de-seguridad)).
 7. **Trabajo de copia** (Datacenter → Backup → Add, o por CLI): cada noche, todas las VMs y LXC
    menos la de PBS (no tiene sentido copiar PBS dentro de sí mismo).
 
@@ -530,7 +520,7 @@ En los comandos: `<S3>` es el host del S3 de SeaweedFS, `<PBS>` la IP de la VM d
      --all 1 --exclude <vmid-de-PBS> --mode snapshot --notes-template '{{guestname}}'
    ```
    A las 02:30 no suele haber deploys. Si coincide uno, Terraform puede encontrarse la VM bloqueada
-   por la copia ([runbooks/apply-fallido.md](runbooks/apply-fallido.md): `VM is locked`).
+   por la copia ([runbooks.md](runbooks.md#apply-fallido): `VM is locked`).
 8. **Configuración de los nodos** (opcional, recomendable). `/etc/pve` (ACL, storages, usuarios,
    la clave de cifrado) no entra en las copias de VMs. Puedes copiarlo con `proxmox-backup-client`
    desde un timer de systemd en cada nodo:
@@ -545,5 +535,5 @@ En los comandos: `<S3>` es el host del S3 de SeaweedFS, `<PBS>` la IP de la VM d
   en `OK`, y en SeaweedFS tienen que aparecer objetos con el prefijo `platform/`
   (`$S3 ls s3://pbs-platform/ --recursive | head`).
 - Después, **restaura una VM de prueba**, como en
-  [runbooks/restaurar-vm.md](runbooks/restaurar-vm.md#prueba-mensual). Una copia que no se ha
+  [runbooks.md](runbooks.md#prueba-mensual). Una copia que no se ha
   restaurado nunca no está probada.

@@ -1,20 +1,19 @@
 # Diseño
 
 **Para quién:** quien quiera entender cómo funciona la plataforma y por qué es así (admins y
-colaboradores curiosos). Para usarla: [inicio-rapido.md](inicio-rapido.md). Para operarla:
-[operador.md](operador.md).
+colaboradores curiosos): arquitectura, [pipeline](#pipeline) y [decisiones](#decisiones). Para
+usarla: [peticiones.md](peticiones.md). Para operarla: [operador.md](operador.md).
 
 ## Qué es
 
-Una plataforma GitOps para el Proxmox de la plataforma. **La fuente de verdad es este repositorio**:
+Una plataforma GitOps para un cluster Proxmox VE de 1 a N nodos. **La fuente de verdad es este repositorio**:
 crear, cambiar o borrar una máquina es escribir, cambiar o borrar un YAML en `requests/`. Nadie
 aplica con credenciales locales; solo el pipeline de GitHub Actions cambia la infraestructura, y solo
 después de que un admin revise y mergee el PR.
 
 - **Terraform** (provider [`bpg/proxmox`](https://github.com/bpg/terraform-provider-proxmox)) crea
   las VMs a partir de los YAML.
-- **Ansible** configura su interior: cuentas de usuario, Docker, k3s, monitorización y los MVP de
-  dataspace.
+- **Ansible** configura su interior: cuentas de usuario, Docker, k3s y monitorización.
 - El **estado** de Terraform vive en HCP Terraform, con bloqueo.
 
 ## Flujo
@@ -48,10 +47,10 @@ después de que un admin revise y mergee el PR.
 | Plataforma | `platform.yaml` | Nodos, red, almacenamiento e imagen base. Fuente única para Terraform y `scripts/iac` |
 | Catálogo | `catalog/flavors.yaml`, `catalog/profiles.yaml` | Tamaños cerrados y perfiles (qué se instala) |
 | Terraform | `terraform/` | `requests.tf` lee los YAML y repite las reglas; `main.tf` crea la imagen y las VMs; `modules/vm` y `modules/k3s-cluster` |
-| Ansible | `ansible/` | Roles `base` (cuentas), `docker`, `k3s`, `monitoring`, `kind_host` y `dataspace_mvp` |
+| Ansible | `ansible/` | Roles `base` (cuentas), `docker`, `k3s` y `monitoring` |
 | CLI | `scripts/iac` + `Makefile` | Asistentes, validación, resúmenes del plan, claves de host, ACL de Proxmox y preflight |
-| Pipeline | `.github/workflows/` | `pr-validate`, `pr-plan`, `deploy` y `drift`. Detalle: [pipeline.md](pipeline.md) |
-| Runners | `runner/` | Dos runners efímeros en la infraestructura. Detalle: [runner/README.md](../runner/README.md) |
+| Pipeline | `.github/workflows/` | `pr-validate`, `pr-plan`, `deploy` y `drift`. Detalle: [Pipeline](#pipeline) |
+| Runners | `runner/` | Dos runners efímeros junto al cluster. Detalle: [runner/README.md](../runner/README.md) |
 
 ## Decisiones
 
@@ -174,23 +173,17 @@ también de lectura).
 acceso a nada. Ver [A-4](seguridad.md#riesgos-aceptados). Si un cliente lo exige, la evolución es el
 repo por proyecto.
 
-### D-11 · Dataspaces: el MVP se despliega con sus propios scripts, en un ref fijado — 14-oct-2026
+### D-11 · *(retirada el 19-oct-2026)*
 
-**Decisión:** el perfil `dataspace-kind` clona `teo-devops/dataspace-mvp` en un **SHA o tag**
-(nunca una rama) y ejecuta `scripts/ciclo-de-vida/kind-up.sh` del MVP indicado en `mvp.path`. Las
-credenciales (una deploy key de solo lectura y un token de ghcr de solo `read:packages`) existen en
-la VM solo durante el despliegue.
-**Alternativas:** reimplementar el despliegue del MVP en Ansible; una rama como ref.
-**Por qué:** dsgen ya genera un MVP completo y probado (`kind-up.sh`, `bruno.sh`): duplicarlo sería
-mantenerlo dos veces. Con un ref fijado, lo desplegado es exactamente lo revisado en el PR. Detalle
-en [dataspace.md](dataspace.md).
+Perfil de ejemplo `dataspace-kind`. Se retiró para que la plantilla sea genérica; el número no se
+reutiliza.
 
 ### D-12 · Los miembros tienen sudo en las VMs de su proyecto — 14-oct-2026
 
 **Decisión:** las cuentas personales están en el grupo `iac-users`, con sudo sin contraseña, y en el
 grupo `docker` en las VMs que lo tienen.
-**Por qué:** son máquinas de desarrollo del propio proyecto; kind y los scripts del MVP necesitan
-Docker, y el grupo `docker` ya equivale a root. Restringirlo daría una falsa sensación de seguridad.
+**Por qué:** son máquinas de desarrollo del propio proyecto; muchas cargas necesitan Docker, y el
+grupo `docker` ya equivale a root. Restringirlo daría una falsa sensación de seguridad.
 Lo que sí está aislado es **qué VMs** son suyas (D-10). Ver [A-3](seguridad.md#riesgos-aceptados).
 
 ### D-13 · VPN de los devs con Cloudflare Zero Trust (túnel + WARP) — 15-oct-2026
@@ -204,7 +197,6 @@ políticas de Gateway lo limitan al `:22` de la red de las VMs. Cómo se monta:
 - La identidad es la misma cuenta de GitHub de `projects.yaml`.
 - Cada acceso se revoca por persona y por dispositivo, y queda un registro de conexiones.
 - El plan Free cubre hasta 50 usuarios.
-- Es un modelo ya probado con otro cluster Proxmox.
 
 **Alternativas:**
 - *Tailscale*: igual de sencillo, pero las ACL de grupo son de pago a partir de cierto tamaño y
@@ -220,18 +212,17 @@ VMs, aunque las VMs y el pipeline siguen funcionando: los runners no usan el tú
 ### D-14 · Copias con Proxmox Backup Server sobre S3 (SeaweedFS) — 15-oct-2026
 
 **Decisión:** Proxmox VE copia cada noche todas las VMs y LXC a Proxmox Backup Server 4. El
-datastore de PBS usa como *backend* un bucket del SeaweedFS que ya corre en otra máquina. Las copias
+datastore de PBS usa como *backend* un bucket S3 (SeaweedFS en el ejemplo) en otra máquina. Las copias
 se cifran en el nodo con una clave que se guarda fuera de la infraestructura. Cómo se monta:
 [bootstrap.md §11](bootstrap.md#11-copias-de-seguridad-proxmox-backup-server-sobre-seaweedfs-s3).
 **Por qué:**
 - Proxmox VE no escribe en S3; PBS sí, desde la versión 4.
 - PBS deduplica y hace copias incrementales: cada noche solo sube lo que ha cambiado.
 - El cifrado en el cliente evita confiar en el almacenamiento.
-- SeaweedFS es el almacenamiento de objetos que ya usamos en otros proyectos.
+- Cualquier S3 compatible sirve; SeaweedFS es ligero y autoalojado.
 
 **Alternativas:**
-- *MinIO*: su edición comunitaria ha dejado de mantenerse, y SeaweedFS ya es el estándar en
-  nuestros proyectos.
+- *MinIO*: su edición comunitaria ha dejado de mantenerse.
 - *`vzdump` a un directorio y después `rclone` a S3*: copias completas cada vez, sin deduplicar,
   y más scripts que mantener.
 - *PBS con un disco local*: queda en el mismo hardware que lo que protege.
@@ -247,8 +238,7 @@ se cifran en el nodo con una clave que se guarda fuera de la infraestructura. C�
 
 Este repo deriva de un diseño GitOps anterior para Proxmox (un proyecto interno, en GitLab). Se
 reutiliza la idea y buena parte del código: las peticiones YAML, el catálogo cerrado, las reglas de `iac check`
-repetidas como `precondition`, el rol `base` de cuentas personales, el inventario generado y la
-vigilancia del despliegue del dataspace. Cambia:
+repetidas como `precondition`, el rol `base` de cuentas personales y el inventario generado. Cambia:
 
 | Diseño anterior | pve-platform-iac | Por qué |
 |---|---|---|
@@ -261,4 +251,110 @@ vigilancia del despliegue del dataspace. Cambia:
 | Imagen `current` | Release fechada + sha256 | D-07 |
 | Token con ACL en `/` | ACL solo en pools, storage, zona y nodos | [R-07](seguridad.md#r-07-tokens-de-proxmox-con-privilegios-mínimos) |
 | SSH root a los nodos (replicación) | Sin SSH a los nodos | D-08 |
-| Escenario de dataspace fijo | Perfil extra `dataspace-kind` con un ref fijado | D-11 |
+
+## Pipeline
+
+Cada workflow y cada job: cuándo se dispara, dónde corre, qué secretos ve, qué hace y cómo
+depurarlo. El porqué de cada control está en [seguridad.md](seguridad.md).
+
+
+| Workflow | Cuándo | Runner | Secretos | Qué hace |
+|---|---|---|---|---|
+| `pr-validate.yml` | PR, push a main y a mano | GitHub (`ubuntu-latest`) | ninguno | Linters y validaciones sin credenciales |
+| `pr-plan.yml` | PR abierto o actualizado | `platform-plan` | env `plan` | Plan de solo lectura de las peticiones del PR, comentado en el PR |
+| `deploy.yml` | push a main (salvo solo docs) y a mano | `platform-apply` | env `production` | plan → apply → known-hosts → configure |
+| `drift.yml` | cada día 05:17 UTC y a mano | `platform-apply` | env `production` | Plan de deriva; falla y abre un issue si hay cambios |
+
+### pr-validate
+
+Corre el código del PR **tal cual**, por eso va en runners de GitHub, sin secretos ni red a la infraestructura
+([R-01](seguridad.md#controles)). Sus jobs son los checks obligatorios del ruleset.
+
+| Job | Comprueba | Si falla |
+|---|---|---|
+| `peticiones y catalogo` | yamllint, esquema de `schema/` sobre `requests/`, `iac check` (rangos, duplicados, perfiles), tabla del catálogo y enlaces de `docs/` | El mensaje dice el fichero y la regla. En local: `make check`, `make lint` |
+| `terraform` | `fmt -check`, `validate` (sin backend, lockfile de solo lectura) y tflint | `make fmt` y `make validate` |
+| `ansible` | `--syntax-check` de cada playbook, ansible-lint, shellcheck y compilación de los scripts de Python | El log señala el fichero |
+| `workflows (actionlint)` | actionlint y que toda action esté fijada por SHA completo | Fija la action por SHA, con la versión en un comentario |
+
+> Un PR desde un fork necesita que un admin pulse **Approve and run** la primera vez
+> ([bootstrap.md §1](bootstrap.md#1-organización-de-github-o-cuenta-personal), paso 5).
+
+### pr-plan
+
+Detalle de seguridad en [seguridad.md R-02](seguridad.md#r-02-plan-de-pr-sin-ejecutar-código-del-pr).
+
+| Job | Dónde | Qué hace |
+|---|---|---|
+| `gate` | GitHub, sin secretos | Lista los ficheros del PR. Solo sigue si **todos** son `requests/{vms,clusters}/*.yaml` y el autor es de confianza (dueño, miembro o colaborador) o el PR lleva la etiqueta `plan` |
+| `plan` | `platform-plan`, env `plan` | Checkout de main + ficheros del PR → esquema + `iac check` → `terraform plan -lock=false -refresh=false` → comentario en el PR (uno por PR, se actualiza en cada push) |
+
+**El comentario:** una tabla por petición (crear, modificar, recrear y destruir), un aviso si algo
+se destruye y el plan completo plegado. Si el PR toca algo fuera de `requests/`, el resumen del run
+dice «Sin plan automático»: es lo esperado, y lo planifica el admin.
+
+**Depurar:**
+- «refs/pull apunta a … y el evento es de …»: llegó un push mientras tanto; el evento siguiente hace
+  el plan.
+- Falla `iac check`: el mensaje es el mismo que da `make check` en local.
+- Falla `terraform init` con 401: token de HCP caducado o mal copiado
+  ([seguridad.md](seguridad.md#token-de-hcp-tf_api_token)).
+- `x509: certificate signed by unknown authority`: la CA de `terraform/certs/` no es la del cluster
+  ([bootstrap.md §3](bootstrap.md#3-ca-del-cluster-proxmox-tls-verificado)).
+- El job se queda en «Waiting for a runner»: [runbooks.md](runbooks.md#runner-caído).
+
+### deploy
+
+Un deploy detrás de otro (`concurrency: deploy`, sin cancelar el que está en marcha).
+
+| Job | Qué hace | Salida |
+|---|---|---|
+| `plan` | `iac check` → `terraform plan -detailed-exitcode -out=tfplan` **refrescando** con el token de escritura → resumen en el run → `sha256` → cifra el plan (`scripts/encrypt-plan.sh`) → artefacto `tfplan` (1 día) | `changes`, `sha256`, `new_vms` |
+| `apply` | Solo si hay cambios. Descarga y descifra, comprueba el `sha256` y aplica `terraform apply tfplan` | — |
+| `known-hosts` | Baja el `known_hosts` del deploy anterior. `iac known-hosts --scan --wait 300 --pinned … --allow-new <new_vms>` → artefacto `known_hosts` (90 días) | El fichero que usan configure y `make ssh` |
+| `configure` | Inventario desde el estado → playbooks de los perfiles en uso (`iac configure --known-hosts known_hosts`), con la clave de `ci` en un ssh-agent | — |
+
+`known-hosts` y `configure` corren también **sin cambios de infraestructura**: un cambio en
+`members` solo necesita Ansible.
+
+**Lanzar a mano** (Actions → deploy → Run workflow, solo admins): reaplica todo. El campo
+`accept_host_keys` acepta la clave nueva de las VMs indicadas
+([runbook](runbooks.md#clave-de-host-cambiada)).
+
+**Depurar:**
+- `apply`: «Saved plan is stale»: el estado cambió entre el plan y el apply (otro apply, o un
+  break-glass). Relanza el deploy.
+- `apply`: «El plan descifrado no es el que generó el job plan»: el artefacto se ha alterado. **No
+  lo relances sin investigarlo** ([runbook](runbooks.md#secreto-comprometido)).
+- `apply` falla a medias: [runbooks.md](runbooks.md#apply-fallido).
+- `known-hosts`: «La clave de host de … NO coincide»: [runbooks.md](runbooks.md#clave-de-host-cambiada).
+- `configure` con `Host key verification failed`: la VM no respondió al escaneo (¿apagada?). Mira la
+  salida del job `known-hosts`.
+- Estado bloqueado: [runbooks.md](runbooks.md#estado-bloqueado).
+
+### drift
+
+`terraform plan -detailed-exitcode -lock=false` refrescando contra Proxmox: código 0 = todo bien; 2 =
+deriva (el job falla y abre o comenta el issue `drift`); 1 = error. **No corrige nada**: lo decide el
+admin ([runbooks.md](runbooks.md#deriva-detectada)).
+
+Tiene su propio grupo de concurrencia: en GitHub, un run pendiente nuevo cancela al pendiente
+anterior del mismo grupo, y un drift no debe cancelar un deploy en cola.
+
+### Comandos de `scripts/iac` que usa el pipeline
+
+| Comando | Job |
+|---|---|
+| `iac check` | pr-validate, pr-plan, deploy/plan |
+| `iac flavors --check-docs` | pr-validate |
+| `iac plan-summary --markdown [--plan f]` | pr-plan, deploy/plan, drift |
+| `iac plan-new-vms` | deploy/plan |
+| `iac known-hosts --scan --pinned … --allow-new …` | deploy/known-hosts |
+| `iac configure --known-hosts known_hosts` | deploy/configure |
+
+### Versiones fijadas
+
+Terraform `1.16.5` (`TF_VERSION` en cada workflow), el provider en `terraform/.terraform.lock.hcl`, las
+actions por SHA, las herramientas de Python con `==`, tflint y actionlint por etiqueta de imagen, y el
+runner en `runner/Dockerfile`. Dependabot propone las subidas con al menos 14 días de antigüedad.
+Subir Terraform: cambia `TF_VERSION` en los cuatro workflows en el mismo PR.

@@ -2,7 +2,7 @@
 
 **Para quién:** el admin, al montar o reconstruir el host de runners.
 **Qué necesitas antes:** los grupos de runners creados ([docs/bootstrap.md §6](../docs/bootstrap.md#6-runners-propios)),
-un host Debian/Ubuntu en la infraestructura (LXC privilegiado con nesting, o VM) con Docker, y acceso root.
+un host Debian/Ubuntu junto al cluster (LXC privilegiado con nesting, o VM) con Docker, y acceso root.
 **Cómo sabrás que ha salido bien:** `systemctl status 'platform-runner@*'` activo, y un PR de prueba
 recibe su comentario de `pr-plan`.
 
@@ -51,12 +51,8 @@ límites de memoria y procesos.
    ```
    Con **cuenta personal** no hay grupos de runners: en lugar de `GH_ORG` y `GROUP_ID_*`, pon
    `GH_REPO=<usuario>/pve-platform-iac`. Los runners quedan registrados en el repo.
-   Después, activa los jobs que usan runners propios (están apagados por defecto, para que un fork
-   o una copia de la plantilla no deje jobs en cola):
-
-   ```sh
-   gh variable set PLATFORM_RUNNERS -R <OWNER>/pve-platform-iac --body true
-   ```
+   Al terminar, activa los jobs que usan runners propios con la variable `PLATFORM_RUNNERS`
+   ([bootstrap.md §6](../docs/bootstrap.md#6-runners-propios)).
 4. **Redes docker**, una por tipo, para poder filtrarlas por separado:
 
    ```sh
@@ -66,7 +62,7 @@ límites de memoria y procesos.
 5. **Cortafuegos.** El de `plan` solo necesita la API de Proxmox; el de `apply` también la red de las
    VMs (SSH para Ansible y keyscan). Los dos necesitan Internet (GitHub, HCP, descargas). Ejemplo con
    la cadena `DOCKER-USER` (ajusta las redes: gestión de Proxmox `192.168.1.0/24`, VMs
-   `192.168.50.0/24`, LAN de casa `192.168.0.0/16`):
+   `192.168.50.0/24`, resto de la LAN `192.168.0.0/16`):
 
    ```sh
    # plan: Proxmox :8006 si; el resto de la LAN, no
@@ -96,10 +92,10 @@ límites de memoria y procesos.
 - **Imagen:** Dependabot propone las versiones nuevas de `actions-runner` en `runner/Dockerfile`. Tras
   el merge: `git -C /opt/pve-platform-iac pull && docker build -t platform-runner:local /opt/pve-platform-iac/runner`.
   No hace falta reiniciar: cada job nuevo usa la imagen nueva.
-- **PAT:** antes de que caduque ([credenciales.md](../docs/credenciales.md#pat-de-los-runners)).
+- **PAT:** antes de que caduque ([seguridad.md](../docs/seguridad.md#pat-de-los-runners)).
 - **Acceso al host:** solo admins. Quien entra en este host puede leer el PAT y ver los jobs en
   marcha ([A-5](../docs/seguridad.md#riesgos-aceptados)).
-- **Problemas:** [docs/runbooks/runner-caido.md](../docs/runbooks/runner-caido.md).
+- **Problemas:** [docs/runbooks.md](../docs/runbooks.md#runner-caído).
 
 ## Ficheros
 

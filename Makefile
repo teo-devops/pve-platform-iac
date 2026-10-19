@@ -2,35 +2,34 @@
 #
 # Todo lo que no es trivial vive en scripts/iac (Python); esto son solo alias con
 # nombres faciles de recordar. Las variables en MAYUSCULAS (NAME, PROJECT, ...) son
-# opcionales: sin ellas, el asistente pregunta. Referencia: docs/README.md
+# opcionales: sin ellas, el asistente pregunta. Referencia: README.md
 
 IAC := ./scripts/iac
 .DEFAULT_GOAL := help
 .PHONY: help init setup doctor flavors new-vm new-cluster check list remove plan apply configure \
-        ssh tunnel kubeconfig known-hosts fmt validate lint docs preflight proxmox-acl image-pin
+        ssh kubeconfig known-hosts fmt validate lint docs preflight proxmox-acl image-pin
 
 # Argumentos opcionales -> flags del CLI, solo si se han pasado.
 opt = $(if $($(1)),--$(2) "$($(1))")
 
 help: ## Esta ayuda
-	@echo "pve-platform-iac — pide VMs y clusters en el Proxmox de la plataforma sin tocar Terraform"
+	@echo "pve-platform-iac — pide VMs y clusters k3s en tu Proxmox VE por PR, sin tocar Terraform"
 	@echo
-	@echo "PRIMERA VEZ  (docs/inicio-rapido.md)"
+	@echo "PRIMERA VEZ  (docs/peticiones.md)"
 	@echo "  make setup                 comprueba lo minimo (python3, PyYAML, ssh)"
 	@echo "  make doctor                tu identidad de GitHub, tus proyectos, tus claves y la red"
 	@echo
 	@echo "PEDIR INFRAESTRUCTURA  (escriben un fichero en requests/ -> commit -> PR desde tu fork)"
 	@echo "  make flavors               catalogo de tamaños y perfiles"
-	@echo "  make new-vm                asistente: una VM (suelta, monitorizacion, MVP de dataspace...)"
-	@echo "  make new-cluster           asistente: un cluster k3s"
+	@echo "  make new-vm                asistente: una VM (Ubuntu base o monitorizacion)"
+	@echo "  make new-cluster           asistente: un cluster k3s (master + workers repartidos entre nodos)"
 	@echo "  make check                 valida requests/ y projects.yaml (sin credenciales)"
 	@echo "  make list                  lo pedido; LIVE=1 cruza con lo que ya existe (admin)"
 	@echo "  make remove NAME=x         quita una peticion (sus VMs se DESTRUYEN en el deploy)"
 	@echo
 	@echo "USAR LO CREADO"
 	@echo "  make ssh NAME=x            entra en la VM (o en el master del cluster x)"
-	@echo "  make tunnel NAME=x         tunel al MVP de una VM dataspace-kind (HTTP_PORT, ENVOY_PORT)"
-	@echo "  make kubeconfig NAME=x     trae el kubeconfig a ansible/kubeconfigs/"
+	@echo "  make kubeconfig NAME=x     trae el kubeconfig del cluster x a ansible/kubeconfigs/"
 	@echo "  make known-hosts           claves de host publicadas por el pipeline (SCAN=1: leerlas tu)"
 	@echo
 	@echo "ADMIN  (docs/operador.md; aplicar en local es break-glass: lo normal es el pipeline)"
@@ -47,7 +46,7 @@ setup: ## Prerrequisitos
 	@python3 -c 'import yaml' 2>/dev/null || { echo "✗ Falta PyYAML: sudo apt install python3-yaml"; exit 1; }
 	@command -v ssh >/dev/null || { echo "✗ Falta ssh: sudo apt install openssh-client"; exit 1; }
 	@ls ~/.ssh/*.pub >/dev/null 2>&1 || echo "! No tienes clave SSH: ssh-keygen -t ed25519, y añade el .pub a tu perfil de GitHub"
-	@command -v gh >/dev/null || echo "! Sin gh (https://cli.github.com): lo usan make new-vm (resolver SHAs) y make ssh (claves de host)"
+	@command -v gh >/dev/null || echo "! Sin gh (https://cli.github.com): lo usan make doctor (tu usuario) y make ssh (claves de host)"
 	@echo "✓ Listo. Para pedir infraestructura no necesitas ninguna credencial de infra."
 	@echo "  Siguiente: make doctor"
 
@@ -59,7 +58,7 @@ flavors:
 
 new-vm:
 	@$(IAC) new-vm $(call opt,NAME,name) $(call opt,PROJECT,project) $(call opt,FLAVOR,flavor) \
-	  $(call opt,PROFILE,profile) $(call opt,MVP_REPO,mvp-repo) $(call opt,MVP_REF,mvp-ref) $(call opt,MVP_PATH,mvp-path)
+	  $(call opt,PROFILE,profile)
 
 new-cluster:
 	@$(IAC) new-cluster $(call opt,NAME,name) $(call opt,PROJECT,project) $(call opt,SIZE,size) $(call opt,WORKERS,workers)
@@ -84,9 +83,6 @@ configure:
 
 ssh:
 	@$(IAC) ssh $(NAME)
-
-tunnel:
-	@$(IAC) tunnel $(NAME)
 
 kubeconfig:
 	@$(IAC) kubeconfig $(NAME)
