@@ -305,8 +305,7 @@ make preflight     # "el token no tiene permisos en '/'" y la lista de rutas
 ```
 
 Si `pveum role add` se queja de un privilegio que no existe, tu versión de Proxmox es anterior a
-la 9 (p. ej. `VM.GuestAgent.Audit` era `VM.Monitor`). Ajusta `APPLY_PRIVS` en `scripts/iac` por PR
-y anótalo en el CHANGELOG.
+la 9 (p. ej. `VM.GuestAgent.Audit` era `VM.Monitor`). Ajusta `APPLY_PRIVS` en `scripts/iac` por PR.
 
 ## 9. Primer deploy
 
@@ -316,7 +315,6 @@ y anótalo en el CHANGELOG.
 3. Merge → `deploy`: `plan`, `apply`, `known-hosts` (avisa «primer deploy: TOFU») y `configure`.
 4. `make ssh NAME=<vm>` desde tu máquina.
 5. Lanza `drift` a mano (Actions → drift → Run workflow): tiene que decir «Sin deriva».
-6. Anota la fecha en la sección «Status» / «Estado» de README.md y README.es.md.
 
 ## 10. Acceso de los devs a las VMs (VPN)
 

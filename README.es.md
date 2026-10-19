@@ -11,10 +11,7 @@ infraestructura**. Un admin revisa el plan y mergea, y solo el pipeline lo aplic
 gestiona las aplicaciones.
 
 > [!NOTE]
-> **Beta (v0.1.0).** El flujo GitOps (petición YAML → PR revisado → plan → apply del pipeline →
-> Ansible) y la puesta en marcha están probados en un cluster Proxmox real con una implementación
-> interna anterior sobre GitLab CI. Esta versión con GitHub Actions, y su endurecimiento adicional,
-> aún no se ha ejecutado de principio a fin contra un cluster. Ver [Estado](#estado).
+> **Beta (v0.1.0).** La interfaz y la configuración aún pueden cambiar antes de la 1.0.
 
 ## Qué problema resuelve
 
@@ -183,25 +180,6 @@ Modelo de amenazas, controles (R-nn), riesgos aceptados (A-n) e inventario de se
 | `terraform/`, `ansible/` | Aprovisionamiento y configuración | No |
 | `scripts/iac`, `Makefile` | La CLI detrás de `make` | No |
 | `.github/workflows/`, `runner/` | Pipeline y runners propios | No (admin) |
-
-## Estado
-
-Al **19-oct-2026**:
-
-- **Probado en un cluster real** (implementación interna anterior, GitLab CI): el modelo de
-  peticiones, el catálogo cerrado, los asistentes, las reglas de validación, las cuentas por persona
-  con las claves SSH del perfil de Git, el inventario generado y el pipeline plan → apply →
-  configure.
-- **Comprobado en CI:** `terraform fmt`/`validate`, tflint, ansible-lint y `--syntax-check`,
-  actionlint, JSON Schema de las peticiones, `iac check`, enlaces internos de la documentación y la
-  tabla del catálogo.
-- **Nuevo en esta versión, aún sin ejecutar contra infraestructura real:** GitHub Actions con runners
-  propios efímeros, estado en HCP, pools por proyecto y el rol `IaCApply` sin ACL en `/`, el plan
-  cifrado, las claves de host fijadas, las copias y la VPN.
-- **Sin tests unitarios todavía** de `scripts/iac` ni `terraform test`. Es lo siguiente antes de
-  una 1.0.
-
-Historial: [CHANGELOG.md](CHANGELOG.md).
 
 ## Contribuir y licencia
 

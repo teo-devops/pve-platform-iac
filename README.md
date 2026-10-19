@@ -11,10 +11,7 @@ credentials**. An admin reviews the plan, merges, and only the pipeline applies 
 Argo CD manages applications.
 
 > [!NOTE]
-> **Beta (v0.1.0).** The GitOps flow (YAML request → reviewed PR → plan → pipeline apply →
-> Ansible) and the bootstrap process are proven on a real Proxmox cluster in an earlier internal
-> implementation on GitLab CI. This GitHub Actions version, with its extra hardening, has not yet
-> run end to end against a cluster. See [Status](#status).
+> **Beta (v0.1.0).** Interfaces and configuration may still change before 1.0.
 
 ## The problem it solves
 
@@ -188,22 +185,6 @@ Run `make` to list every command.
 | `terraform/`, `ansible/` | Provisioning and configuration | No |
 | `scripts/iac`, `Makefile` | The CLI behind `make` | No |
 | `.github/workflows/`, `runner/` | Pipeline and self-hosted runners | No (admin) |
-
-## Status
-
-As of **19 Oct 2026**:
-
-- **Proven on a real cluster** (earlier internal implementation, GitLab CI): the request model,
-  the closed catalog, the wizards, the validation rules, per-person accounts with SSH keys from the
-  Git profile, the generated inventory and the plan → apply → configure pipeline.
-- **Checked in CI:** `terraform fmt`/`validate`, tflint, ansible-lint and syntax checks,
-  actionlint, JSON Schema for requests, `iac check`, internal doc links and the catalog table.
-- **New in this version, not yet run against real infrastructure:** GitHub Actions with
-  self-hosted ephemeral runners, HCP state, per-project pools and the `IaCApply` role without ACLs
-  on `/`, the encrypted plan, pinned host keys, backups and the VPN.
-- **No unit tests yet** for `scripts/iac` and no `terraform test`. That comes before 1.0.
-
-History: [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing and license
 
