@@ -93,7 +93,7 @@ jobs:
           echo "sha256=$(sha256sum terraform/tfplan | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           ./scripts/encrypt-plan.sh encrypt terraform/tfplan
           rm -f terraform/tfplan
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.plan.outputs.changes == 'true'
         with:
           name: tfplan
@@ -181,7 +181,7 @@ jobs:
           ./scripts/iac known-hosts --scan --wait 300 --output known_hosts \
             --pinned prev/known_hosts --allow-new "$NEW_VMS,$ACCEPT"
       # Publico a proposito (no hay secretos): `make ssh` lo baja y lo usa en modo estricto.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: known_hosts
           path: known_hosts
